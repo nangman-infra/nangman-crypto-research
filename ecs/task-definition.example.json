@@ -1,0 +1,52 @@
+{
+  "family": "td-nangman-dev-research-apn2",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "1024",
+  "memory": "2048",
+  "runtimePlatform": {
+    "cpuArchitecture": "ARM64",
+    "operatingSystemFamily": "LINUX"
+  },
+  "executionRoleArn": "arn:aws:iam::<aws-account-id>:role/role-nangman-dev-research-exec",
+  "taskRoleArn": "arn:aws:iam::<aws-account-id>:role/role-nangman-dev-research-task",
+  "containerDefinitions": [
+    {
+      "name": "research-app",
+      "image": "<aws-account-id>.dkr.ecr.ap-northeast-2.amazonaws.com/ecr-nangman-dev-research-apn2:REPLACE_WITH_IMAGE_TAG",
+      "essential": true,
+      "readonlyRootFilesystem": true,
+      "linuxParameters": {
+        "capabilities": {
+          "drop": ["ALL"]
+        }
+      },
+      "environment": [
+        {
+          "name": "AWS_REGION",
+          "value": "ap-northeast-2"
+        },
+        {
+          "name": "RESEARCH_TRIGGER_PRIORITY",
+          "value": "p0"
+        },
+        {
+          "name": "RESEARCH_OUTPUT_S3_BUCKET",
+          "value": "nangman-crypto-dev-research-<account-suffix>"
+        },
+        {
+          "name": "RESEARCH_MARKET_L1_S3_BUCKET",
+          "value": "nangman-crypto-dev-market-ingest-l1-<account-suffix>"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/aws/ecs/log-nangman-dev-research-apn2",
+          "awslogs-region": "ap-northeast-2",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}

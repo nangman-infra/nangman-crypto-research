@@ -1,0 +1,1205 @@
+use crate::admission::validate_bundle_admission;
+use crate::error::{AppError, AppResult};
+use crate::io::{
+    read_candidate_bundles, read_market_feature_deltas, read_market_regime_contexts,
+    read_oss_adapter_runs, read_replay_run_index_records, read_replay_runs,
+    read_research_input_manifest, write_research_outputs,
+};
+use crate::model::{
+    IntelCandidateEvidenceBundle, MarketFeatureDelta, MarketRegimeContext,
+    OSS_ADAPTER_RUN_SCHEMA_VERSION, OssAdapterRun, RESEARCH_INPUT_MANIFEST_SCHEMA_VERSION,
+    ReplayRun, ReplayRunIndexRecord, ResearchArtifactRef, ResearchInputManifest,
+    ResearchRuntimeBudgetPolicy,
+};
+use crate::replay::{build_invalid_replay_run, run_native_replay};
+use crate::report::build_report;
+use crate::storage::{
+    read_candidate_bundles_from_s3, read_market_feature_deltas_from_s3,
+    read_market_regime_contexts_from_s3, read_oss_adapter_runs_from_s3,
+    read_replay_run_index_records_from_s3, read_replay_runs_from_s3,
+    read_research_input_manifest_from_s3, write_research_outputs_to_s3,
+};
+use crate::time::now_ms;
+use serde::Serialize;
+use std::collections::{BTreeMap, BTreeSet};
+use std::env;
+use std::path::PathBuf;
+
+const DEFAULT_MARKET_L1_S3_BUCKET: &str = "nangman-crypto-dev-market-ingest-l1-<account-suffix>";
+const MARKET_FEATURE_DELTA_ARTIFACT_TYPE: &str = "market_feature_delta";
+const MARKET_FEATURE_DELTA_SUMMARY_ARTIFACT_TYPE: &str = "market_feature_delta_summary";
+const MARKET_REGIME_CONTEXT_ARTIFACT_TYPE: &str = "market_regime_context";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Args {
+    pub input_manifest_file: Option<PathBuf>,
+    pub input_manifest_s3_bucket: Option<String>,
+    pub input_manifest_s3_key: Option<String>,
+    pub input_bundle_file: Option<PathBuf>,
+    pub input_bundle_s3_bucket: Option<String>,
+    pub input_bundle_s3_key: Option<String>,
+    pub market_feature_delta_file: Option<PathBuf>,
+    pub market_regime_context_file: Option<PathBuf>,
+    pub market_l1_s3_bucket: Option<String>,
+    pub market_feature_delta_s3_keys: Vec<String>,
+    pub market_regime_context_s3_keys: Vec<String>,
+    pub historical_replay_run_files: Vec<PathBuf>,
+    pub historical_replay_run_index_files: Vec<PathBuf>,
+    pub oss_adapter_run_files: Vec<PathBuf>,
+    pub oss_adapter_run_s3_bucket: Option<String>,
+    pub oss_adapter_run_s3_keys: Vec<String>,
+    pub historical_replay_run_s3_bucket: Option<String>,
+    pub historical_replay_run_s3_keys: Vec<String>,
+    pub historical_replay_run_index_s3_bucket: Option<String>,
+    pub historical_replay_run_index_s3_keys: Vec<String>,
+    pub output_dir: Option<PathBuf>,
+    pub output_s3_bucket: Option<String>,
+    pub output_s3_prefix: Option<String>,
+    pub research_packet_id: String,
+    pub run_scope: String,
+    pub now_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct RunSummary {
+    pub processed_bundles: usize,
+    pub replay_runs_created: usize,
+    pub historical_replay_runs_loaded: usize,
+    pub oss_adapter_runs_loaded: usize,
+    pub shadow_validation_runs_created: usize,
+    pub portfolio_risk_reject_events_created: usize,
+    pub portfolio_reduce_only_signals_created: usize,
+    pub output_files: Vec<String>,
+}
+
+pub fn parse_args<I>(mut values: I) -> AppResult<Option<Args>>
+where
+    I: Iterator<Item = String>,
+{
+    let mut args = Args {
+        input_manifest_file: None,
+        input_manifest_s3_bucket: env_string("RESEARCH_INPUT_MANIFEST_S3_BUCKET"),
+        input_manifest_s3_key: env_string("RESEARCH_INPUT_MANIFEST_S3_KEY"),
+        input_bundle_file: None,
+        input_bundle_s3_bucket: env_string("RESEARCH_INPUT_S3_BUCKET"),
+        input_bundle_s3_key: env_string("RESEARCH_INPUT_S3_KEY"),
+        market_feature_delta_file: None,
+        market_regime_context_file: None,
+        market_l1_s3_bucket: env_string("RESEARCH_MARKET_L1_S3_BUCKET"),
+        market_feature_delta_s3_keys: env_list("RESEARCH_MARKET_FEATURE_DELTA_S3_KEYS"),
+        market_regime_context_s3_keys: env_list("RESEARCH_MARKET_REGIME_CONTEXT_S3_KEYS"),
+        historical_replay_run_files: Vec::new(),
+        historical_replay_run_index_files: Vec::new(),
+        oss_adapter_run_files: Vec::new(),
+        oss_adapter_run_s3_bucket: env_string("RESEARCH_OSS_ADAPTER_RUN_S3_BUCKET"),
+        oss_adapter_run_s3_keys: env_list("RESEARCH_OSS_ADAPTER_RUN_S3_KEYS"),
+        historical_replay_run_s3_bucket: env_string("RESEARCH_HISTORICAL_REPLAY_RUN_S3_BUCKET"),
+        historical_replay_run_s3_keys: env_list("RESEARCH_HISTORICAL_REPLAY_RUN_S3_KEYS"),
+        historical_replay_run_index_s3_bucket: env_string(
+            "RESEARCH_HISTORICAL_REPLAY_RUN_INDEX_S3_BUCKET",
+        ),
+        historical_replay_run_index_s3_keys: env_list(
+            "RESEARCH_HISTORICAL_REPLAY_RUN_INDEX_S3_KEYS",
+        ),
+        output_dir: None,
+        output_s3_bucket: env_string("RESEARCH_OUTPUT_S3_BUCKET"),
+        output_s3_prefix: env_string("RESEARCH_OUTPUT_S3_PREFIX"),
+        research_packet_id: "local_research_packet".to_owned(),
+        run_scope: "p0_candidate_bundle_local".to_owned(),
+        now_ms: None,
+    };
+
+    while let Some(arg) = values.next() {
+        match arg.as_str() {
+            "-h" | "--help" => return Ok(None),
+            "--input-manifest-file" => {
+                args.input_manifest_file = Some(absolute_path_arg(
+                    values.next(),
+                    "--input-manifest-file requires an absolute path",
+                )?);
+            }
+            "--input-manifest-s3-bucket" => {
+                args.input_manifest_s3_bucket = Some(non_empty_arg(
+                    values.next(),
+                    "--input-manifest-s3-bucket requires a value",
+                )?);
+            }
+            "--input-manifest-s3-key" => {
+                args.input_manifest_s3_key = Some(non_empty_arg(
+                    values.next(),
+                    "--input-manifest-s3-key requires a value",
+                )?);
+            }
+            "--input-bundle-file" => {
+                args.input_bundle_file = Some(absolute_path_arg(
+                    values.next(),
+                    "--input-bundle-file requires an absolute path",
+                )?);
+            }
+            "--input-bundle-s3-bucket" => {
+                args.input_bundle_s3_bucket = Some(non_empty_arg(
+                    values.next(),
+                    "--input-bundle-s3-bucket requires a value",
+                )?);
+            }
+            "--input-bundle-s3-key" => {
+                args.input_bundle_s3_key = Some(non_empty_arg(
+                    values.next(),
+                    "--input-bundle-s3-key requires a value",
+                )?);
+            }
+            "--market-feature-delta-file" => {
+                args.market_feature_delta_file = Some(absolute_path_arg(
+                    values.next(),
+                    "--market-feature-delta-file requires an absolute path",
+                )?);
+            }
+            "--market-regime-context-file" => {
+                args.market_regime_context_file = Some(absolute_path_arg(
+                    values.next(),
+                    "--market-regime-context-file requires an absolute path",
+                )?);
+            }
+            "--market-l1-s3-bucket" => {
+                args.market_l1_s3_bucket = Some(non_empty_arg(
+                    values.next(),
+                    "--market-l1-s3-bucket requires a value",
+                )?);
+            }
+            "--market-feature-delta-s3-key" => {
+                args.market_feature_delta_s3_keys.push(non_empty_arg(
+                    values.next(),
+                    "--market-feature-delta-s3-key requires a value",
+                )?);
+            }
+            "--market-regime-context-s3-key" => {
+                args.market_regime_context_s3_keys.push(non_empty_arg(
+                    values.next(),
+                    "--market-regime-context-s3-key requires a value",
+                )?);
+            }
+            "--historical-replay-run-file" => {
+                args.historical_replay_run_files.push(absolute_path_arg(
+                    values.next(),
+                    "--historical-replay-run-file requires an absolute path",
+                )?);
+            }
+            "--historical-replay-run-index-file" => {
+                args.historical_replay_run_index_files
+                    .push(absolute_path_arg(
+                        values.next(),
+                        "--historical-replay-run-index-file requires an absolute path",
+                    )?);
+            }
+            "--oss-adapter-run-file" => {
+                args.oss_adapter_run_files.push(absolute_path_arg(
+                    values.next(),
+                    "--oss-adapter-run-file requires an absolute path",
+                )?);
+            }
+            "--oss-adapter-run-s3-bucket" => {
+                args.oss_adapter_run_s3_bucket = Some(non_empty_arg(
+                    values.next(),
+                    "--oss-adapter-run-s3-bucket requires a value",
+                )?);
+            }
+            "--oss-adapter-run-s3-key" => {
+                args.oss_adapter_run_s3_keys.push(non_empty_arg(
+                    values.next(),
+                    "--oss-adapter-run-s3-key requires a value",
+                )?);
+            }
+            "--historical-replay-run-s3-bucket" => {
+                args.historical_replay_run_s3_bucket = Some(non_empty_arg(
+                    values.next(),
+                    "--historical-replay-run-s3-bucket requires a value",
+                )?);
+            }
+            "--historical-replay-run-s3-key" => {
+                args.historical_replay_run_s3_keys.push(non_empty_arg(
+                    values.next(),
+                    "--historical-replay-run-s3-key requires a value",
+                )?);
+            }
+            "--historical-replay-run-index-s3-bucket" => {
+                args.historical_replay_run_index_s3_bucket = Some(non_empty_arg(
+                    values.next(),
+                    "--historical-replay-run-index-s3-bucket requires a value",
+                )?);
+            }
+            "--historical-replay-run-index-s3-key" => {
+                args.historical_replay_run_index_s3_keys.push(non_empty_arg(
+                    values.next(),
+                    "--historical-replay-run-index-s3-key requires a value",
+                )?);
+            }
+            "--output-dir" => {
+                args.output_dir = Some(absolute_path_arg(
+                    values.next(),
+                    "--output-dir requires an absolute path",
+                )?);
+            }
+            "--output-s3-bucket" => {
+                args.output_s3_bucket = Some(non_empty_arg(
+                    values.next(),
+                    "--output-s3-bucket requires a value",
+                )?);
+            }
+            "--output-s3-prefix" => {
+                args.output_s3_prefix = Some(non_empty_arg(
+                    values.next(),
+                    "--output-s3-prefix requires a value",
+                )?);
+            }
+            "--research-packet-id" => {
+                args.research_packet_id =
+                    non_empty_arg(values.next(), "--research-packet-id requires a value")?;
+            }
+            "--run-scope" => {
+                args.run_scope = non_empty_arg(values.next(), "--run-scope requires a value")?;
+            }
+            "--now-ms" => {
+                let raw = values
+                    .next()
+                    .ok_or_else(|| AppError::config("--now-ms requires a number"))?;
+                let value = raw
+                    .parse::<i64>()
+                    .map_err(|_| AppError::config("--now-ms must be an integer"))?;
+                if value < 0 {
+                    return Err(AppError::config("--now-ms must be non-negative"));
+                }
+                args.now_ms = Some(value);
+            }
+            other => {
+                return Err(AppError::config(format!(
+                    "unknown argument: {other}\n\n{}",
+                    help_text()
+                )));
+            }
+        }
+    }
+
+    if args.input_bundle_file.is_some()
+        && (args.input_bundle_s3_bucket.is_some() || args.input_bundle_s3_key.is_some())
+    {
+        return Err(AppError::config(
+            "use either --input-bundle-file or --input-bundle-s3-bucket/--input-bundle-s3-key, not both",
+        ));
+    }
+    if args.input_manifest_file.is_some()
+        && (args.input_manifest_s3_bucket.is_some() || args.input_manifest_s3_key.is_some())
+    {
+        return Err(AppError::config(
+            "use either --input-manifest-file or --input-manifest-s3-bucket/--input-manifest-s3-key, not both",
+        ));
+    }
+    if args.input_manifest_s3_bucket.is_some() != args.input_manifest_s3_key.is_some() {
+        return Err(AppError::config(
+            "RESEARCH_INPUT_MANIFEST_S3_BUCKET and RESEARCH_INPUT_MANIFEST_S3_KEY must be set together",
+        ));
+    }
+    if args.input_bundle_file.is_none()
+        && args.input_manifest_file.is_none()
+        && args.input_manifest_s3_key.is_none()
+        && (args.input_bundle_s3_bucket.is_none() || args.input_bundle_s3_key.is_none())
+    {
+        return Err(AppError::config(
+            "--input-bundle-file or --input-manifest-file is required unless S3 input environment is set",
+        ));
+    }
+    if args.output_dir.is_some() && args.output_s3_bucket.is_some() {
+        return Err(AppError::config(
+            "use either --output-dir or --output-s3-bucket, not both",
+        ));
+    }
+    if args.market_feature_delta_file.is_some() && !args.market_feature_delta_s3_keys.is_empty() {
+        return Err(AppError::config(
+            "use either --market-feature-delta-file or --market-feature-delta-s3-key, not both",
+        ));
+    }
+    if args.market_regime_context_file.is_some() && !args.market_regime_context_s3_keys.is_empty() {
+        return Err(AppError::config(
+            "use either --market-regime-context-file or --market-regime-context-s3-key, not both",
+        ));
+    }
+    if !args.historical_replay_run_s3_keys.is_empty()
+        && args.historical_replay_run_s3_bucket.is_none()
+    {
+        return Err(AppError::config(
+            "--historical-replay-run-s3-bucket is required when --historical-replay-run-s3-key is set",
+        ));
+    }
+    if !args.historical_replay_run_index_s3_keys.is_empty()
+        && args.historical_replay_run_index_s3_bucket.is_none()
+    {
+        return Err(AppError::config(
+            "--historical-replay-run-index-s3-bucket is required when --historical-replay-run-index-s3-key is set",
+        ));
+    }
+    if !args.oss_adapter_run_s3_keys.is_empty() && args.oss_adapter_run_s3_bucket.is_none() {
+        return Err(AppError::config(
+            "--oss-adapter-run-s3-bucket is required when --oss-adapter-run-s3-key is set",
+        ));
+    }
+
+    Ok(Some(args))
+}
+
+pub async fn run(args: Args) -> AppResult<RunSummary> {
+    let manifest = load_input_manifest(&args).await?;
+    validate_input_manifest(manifest.as_ref())?;
+    let budget = manifest
+        .as_ref()
+        .map(|manifest| manifest.runtime_budget_policy.clone())
+        .unwrap_or_default();
+    validate_manifest_budget(manifest.as_ref(), &budget)?;
+
+    let bundles = read_input_bundles(&args, manifest.as_ref()).await?;
+    if bundles.is_empty() {
+        return Err(AppError::validation("input bundle file must not be empty"));
+    }
+    enforce_budget(
+        "candidate_bundle_count",
+        bundles.len(),
+        budget.max_candidate_bundle_count,
+    )?;
+    let market_deltas = load_market_deltas(&args, &bundles, manifest.as_ref()).await?;
+    let regime_contexts = load_regime_contexts(&args, &bundles, manifest.as_ref()).await?;
+    let historical_replay_runs = load_historical_replay_runs(&args, manifest.as_ref()).await?;
+    let oss_adapter_runs = load_oss_adapter_runs(&args, manifest.as_ref()).await?;
+    validate_oss_adapter_runs(&oss_adapter_runs)?;
+    enforce_budget(
+        "historical_replay_run_count",
+        historical_replay_runs.len(),
+        budget.max_replay_run_count,
+    )?;
+    enforce_budget(
+        "oss_adapter_run_count",
+        oss_adapter_runs.len(),
+        budget.max_oss_adapter_run_ref_count,
+    )?;
+    let created_at_ms = args
+        .now_ms
+        .unwrap_or_else(|| deterministic_report_created_at_ms(&bundles));
+    let output_partition_at_ms = args.now_ms.unwrap_or_else(now_ms);
+    let replay_runs = build_replay_runs(&bundles, &market_deltas, &regime_contexts);
+    enforce_budget(
+        "new_replay_run_count",
+        replay_runs.len(),
+        budget.max_replay_run_count,
+    )?;
+    let mut aggregate_replay_runs = historical_replay_runs.clone();
+    aggregate_replay_runs.extend(replay_runs.clone());
+    enforce_budget(
+        "aggregate_replay_run_count",
+        aggregate_replay_runs.len(),
+        budget.max_replay_run_count,
+    )?;
+    let research_packet_id = manifest
+        .as_ref()
+        .and_then(|manifest| manifest.research_packet_id.as_deref())
+        .unwrap_or(&args.research_packet_id);
+    let run_scope = manifest
+        .as_ref()
+        .and_then(|manifest| manifest.run_scope.as_deref())
+        .unwrap_or(&args.run_scope);
+    let report = build_report(
+        research_packet_id,
+        run_scope,
+        created_at_ms,
+        &bundles,
+        &aggregate_replay_runs,
+        &oss_adapter_runs,
+    );
+    let output_files = if let Some(output_dir) = args.output_dir.as_deref() {
+        write_research_outputs(
+            output_dir,
+            &report,
+            &replay_runs,
+            &report.shadow_validation_runs,
+            output_partition_at_ms,
+        )?
+        .into_iter()
+        .map(|path| path.display().to_string())
+        .collect()
+    } else if let Some(output_bucket) = args.output_s3_bucket.as_deref() {
+        write_research_outputs_to_s3(
+            output_bucket,
+            args.output_s3_prefix.as_deref().unwrap_or(""),
+            &report,
+            &replay_runs,
+            &report.shadow_validation_runs,
+            output_partition_at_ms,
+        )
+        .await?
+    } else {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        Vec::new()
+    };
+
+    Ok(RunSummary {
+        processed_bundles: bundles.len(),
+        replay_runs_created: replay_runs.len(),
+        historical_replay_runs_loaded: historical_replay_runs.len(),
+        oss_adapter_runs_loaded: oss_adapter_runs.len(),
+        shadow_validation_runs_created: report.shadow_validation_runs.len(),
+        portfolio_risk_reject_events_created: report.portfolio_risk_reject_events.len(),
+        portfolio_reduce_only_signals_created: report.portfolio_reduce_only_signals.len(),
+        output_files,
+    })
+}
+
+async fn load_input_manifest(args: &Args) -> AppResult<Option<ResearchInputManifest>> {
+    if let Some(path) = args.input_manifest_file.as_deref() {
+        return read_research_input_manifest(path).map(Some);
+    }
+    match (
+        args.input_manifest_s3_bucket.as_deref(),
+        args.input_manifest_s3_key.as_deref(),
+    ) {
+        (Some(bucket), Some(key)) => read_research_input_manifest_from_s3(bucket, key)
+            .await
+            .map(Some),
+        _ => Ok(None),
+    }
+}
+
+fn validate_input_manifest(manifest: Option<&ResearchInputManifest>) -> AppResult<()> {
+    let Some(manifest) = manifest else {
+        return Ok(());
+    };
+    if manifest.schema_version != RESEARCH_INPUT_MANIFEST_SCHEMA_VERSION {
+        return Err(AppError::validation(format!(
+            "research input manifest schema_version must be {RESEARCH_INPUT_MANIFEST_SCHEMA_VERSION}; got {}",
+            manifest.schema_version
+        )));
+    }
+    for artifact_ref in all_manifest_refs(manifest) {
+        validate_artifact_ref(artifact_ref)?;
+    }
+    Ok(())
+}
+
+fn validate_manifest_budget(
+    manifest: Option<&ResearchInputManifest>,
+    budget: &ResearchRuntimeBudgetPolicy,
+) -> AppResult<()> {
+    let Some(manifest) = manifest else {
+        return Ok(());
+    };
+    enforce_budget(
+        "candidate_bundle_ref_count",
+        manifest.candidate_bundle_refs.len(),
+        budget.max_candidate_bundle_count,
+    )?;
+    enforce_budget(
+        "market_artifact_ref_count",
+        manifest.market_feature_delta_refs.len() + manifest.market_regime_context_refs.len(),
+        budget.max_market_artifact_ref_count,
+    )?;
+    enforce_budget(
+        "hypothesis_harness_result_ref_count",
+        manifest.hypothesis_harness_result_refs.len(),
+        budget.max_hypothesis_harness_result_ref_count,
+    )?;
+    enforce_budget(
+        "oss_adapter_run_ref_count",
+        manifest.oss_adapter_run_refs.len(),
+        budget.max_oss_adapter_run_ref_count,
+    )?;
+    enforce_budget(
+        "historical_replay_run_ref_count",
+        manifest.historical_replay_run_refs.len() + manifest.historical_replay_run_index_refs.len(),
+        budget.max_historical_replay_run_ref_count,
+    )?;
+    Ok(())
+}
+
+fn enforce_budget(name: &str, actual: usize, maximum: usize) -> AppResult<()> {
+    if maximum == 0 {
+        return Err(AppError::config(format!(
+            "runtime_budget_policy.{name} maximum must be greater than zero"
+        )));
+    }
+    if actual > maximum {
+        return Err(AppError::validation(format!(
+            "runtime budget exceeded for {name}: actual={actual}, max={maximum}"
+        )));
+    }
+    Ok(())
+}
+
+fn all_manifest_refs(manifest: &ResearchInputManifest) -> Vec<&ResearchArtifactRef> {
+    manifest
+        .candidate_bundle_refs
+        .iter()
+        .chain(manifest.market_feature_delta_refs.iter())
+        .chain(manifest.market_regime_context_refs.iter())
+        .chain(manifest.hypothesis_harness_result_refs.iter())
+        .chain(manifest.oss_adapter_run_refs.iter())
+        .chain(manifest.historical_replay_run_refs.iter())
+        .chain(manifest.historical_replay_run_index_refs.iter())
+        .collect()
+}
+
+fn validate_artifact_ref(artifact_ref: &ResearchArtifactRef) -> AppResult<()> {
+    let location = ArtifactLocation::from_uri(&artifact_ref.uri)?;
+    match location {
+        ArtifactLocation::Local(path) if !path.is_absolute() => Err(AppError::config(format!(
+            "manifest artifact uri must be an absolute path or s3 URI: {}",
+            artifact_ref.uri
+        ))),
+        _ => Ok(()),
+    }
+}
+
+async fn read_input_bundles(
+    args: &Args,
+    manifest: Option<&ResearchInputManifest>,
+) -> AppResult<Vec<IntelCandidateEvidenceBundle>> {
+    let mut bundles = Vec::new();
+    if let Some(path) = args.input_bundle_file.as_deref() {
+        append_unique_bundles(&mut bundles, read_candidate_bundles(path)?);
+    }
+    if let (Some(bucket), Some(key)) = (
+        args.input_bundle_s3_bucket.as_deref(),
+        args.input_bundle_s3_key.as_deref(),
+    ) {
+        append_unique_bundles(
+            &mut bundles,
+            read_candidate_bundles_from_s3(bucket, key).await?,
+        );
+    }
+    if let Some(manifest) = manifest {
+        for artifact_ref in &manifest.candidate_bundle_refs {
+            append_unique_bundles(
+                &mut bundles,
+                read_candidate_bundles_from_ref(artifact_ref).await?,
+            );
+        }
+    }
+    Ok(bundles)
+}
+
+pub fn print_help() {
+    println!("{}", help_text());
+}
+
+fn build_replay_runs(
+    bundles: &[crate::model::IntelCandidateEvidenceBundle],
+    market_deltas: &[MarketFeatureDelta],
+    regime_contexts: &[MarketRegimeContext],
+) -> Vec<ReplayRun> {
+    let mut replay_runs = Vec::new();
+    for bundle in bundles {
+        let admission = validate_bundle_admission(bundle);
+        if !admission.admitted {
+            replay_runs.push(build_invalid_replay_run(bundle, &admission));
+            continue;
+        }
+        replay_runs.extend(run_native_replay(bundle, market_deltas, regime_contexts));
+    }
+    replay_runs
+}
+
+async fn load_market_deltas(
+    args: &Args,
+    bundles: &[IntelCandidateEvidenceBundle],
+    manifest: Option<&ResearchInputManifest>,
+) -> AppResult<Vec<MarketFeatureDelta>> {
+    let mut deltas = Vec::new();
+    if let Some(path) = args.market_feature_delta_file.as_deref() {
+        deltas.extend(read_market_feature_deltas(path)?);
+    }
+    if let Some(manifest) = manifest {
+        for artifact_ref in &manifest.market_feature_delta_refs {
+            deltas.extend(read_market_feature_deltas_from_ref(artifact_ref).await?);
+        }
+    }
+    if !should_read_market_s3(args) {
+        return Ok(deltas);
+    }
+    let keys = market_feature_delta_s3_keys(args, bundles);
+    if keys.is_empty() {
+        return Ok(deltas);
+    }
+    deltas.extend(read_market_feature_deltas_from_s3(market_l1_s3_bucket(args), &keys).await?);
+    Ok(deltas)
+}
+
+async fn load_regime_contexts(
+    args: &Args,
+    bundles: &[IntelCandidateEvidenceBundle],
+    manifest: Option<&ResearchInputManifest>,
+) -> AppResult<Vec<MarketRegimeContext>> {
+    let mut contexts = Vec::new();
+    if let Some(path) = args.market_regime_context_file.as_deref() {
+        contexts.extend(read_market_regime_contexts(path)?);
+    }
+    if let Some(manifest) = manifest {
+        for artifact_ref in &manifest.market_regime_context_refs {
+            contexts.extend(read_market_regime_contexts_from_ref(artifact_ref).await?);
+        }
+    }
+    if !should_read_market_s3(args) {
+        return Ok(contexts);
+    }
+    let keys = market_regime_context_s3_keys(args, bundles);
+    if keys.is_empty() {
+        return Ok(contexts);
+    }
+    contexts.extend(read_market_regime_contexts_from_s3(market_l1_s3_bucket(args), &keys).await?);
+    Ok(contexts)
+}
+
+async fn load_historical_replay_runs(
+    args: &Args,
+    manifest: Option<&ResearchInputManifest>,
+) -> AppResult<Vec<ReplayRun>> {
+    let mut replay_runs = Vec::new();
+    for path in &args.historical_replay_run_files {
+        append_unique_replay_runs(&mut replay_runs, read_replay_runs(path)?);
+    }
+    if let Some(manifest) = manifest {
+        for artifact_ref in &manifest.historical_replay_run_refs {
+            append_unique_replay_runs(
+                &mut replay_runs,
+                read_replay_runs_from_ref(artifact_ref).await?,
+            );
+        }
+    }
+    if !args.historical_replay_run_s3_keys.is_empty() {
+        let bucket = args
+            .historical_replay_run_s3_bucket
+            .as_deref()
+            .ok_or_else(|| {
+                AppError::config("RESEARCH_HISTORICAL_REPLAY_RUN_S3_BUCKET is required")
+            })?;
+        append_unique_replay_runs(
+            &mut replay_runs,
+            read_replay_runs_from_s3(bucket, &args.historical_replay_run_s3_keys).await?,
+        );
+    }
+    let index_records = load_historical_replay_run_index_records(args, manifest).await?;
+    append_unique_replay_runs(
+        &mut replay_runs,
+        load_replay_runs_from_index_records(&index_records).await?,
+    );
+    Ok(replay_runs)
+}
+
+async fn load_historical_replay_run_index_records(
+    args: &Args,
+    manifest: Option<&ResearchInputManifest>,
+) -> AppResult<Vec<ReplayRunIndexRecord>> {
+    let mut records = Vec::new();
+    for path in &args.historical_replay_run_index_files {
+        records.extend(read_replay_run_index_records(path)?);
+    }
+    if let Some(manifest) = manifest {
+        for artifact_ref in &manifest.historical_replay_run_index_refs {
+            records.extend(read_replay_run_index_records_from_ref(artifact_ref).await?);
+        }
+    }
+    if !args.historical_replay_run_index_s3_keys.is_empty() {
+        let bucket = args
+            .historical_replay_run_index_s3_bucket
+            .as_deref()
+            .ok_or_else(|| {
+                AppError::config("RESEARCH_HISTORICAL_REPLAY_RUN_INDEX_S3_BUCKET is required")
+            })?;
+        records.extend(
+            read_replay_run_index_records_from_s3(
+                bucket,
+                &args.historical_replay_run_index_s3_keys,
+            )
+            .await?,
+        );
+    }
+    Ok(records)
+}
+
+async fn load_oss_adapter_runs(
+    args: &Args,
+    manifest: Option<&ResearchInputManifest>,
+) -> AppResult<Vec<OssAdapterRun>> {
+    let mut runs = Vec::new();
+    for path in &args.oss_adapter_run_files {
+        append_unique_oss_adapter_runs(&mut runs, read_oss_adapter_runs(path)?);
+    }
+    if let Some(manifest) = manifest {
+        for artifact_ref in &manifest.oss_adapter_run_refs {
+            append_unique_oss_adapter_runs(
+                &mut runs,
+                read_oss_adapter_runs_from_ref(artifact_ref).await?,
+            );
+        }
+    }
+    if !args.oss_adapter_run_s3_keys.is_empty() {
+        let bucket = args
+            .oss_adapter_run_s3_bucket
+            .as_deref()
+            .ok_or_else(|| AppError::config("RESEARCH_OSS_ADAPTER_RUN_S3_BUCKET is required"))?;
+        append_unique_oss_adapter_runs(
+            &mut runs,
+            read_oss_adapter_runs_from_s3(bucket, &args.oss_adapter_run_s3_keys).await?,
+        );
+    }
+    Ok(runs)
+}
+
+fn validate_oss_adapter_runs(runs: &[OssAdapterRun]) -> AppResult<()> {
+    for run in runs {
+        if run.schema_version != OSS_ADAPTER_RUN_SCHEMA_VERSION {
+            return Err(AppError::validation(format!(
+                "oss adapter run schema_version must be {OSS_ADAPTER_RUN_SCHEMA_VERSION}; got {}",
+                run.schema_version
+            )));
+        }
+        if !run.lookahead_check_result.eq_ignore_ascii_case("passed") {
+            return Err(AppError::validation(format!(
+                "oss adapter run {} failed lookahead check: {}",
+                run.oss_adapter_run_id, run.lookahead_check_result
+            )));
+        }
+        if !run
+            .holding_horizon_check_result
+            .eq_ignore_ascii_case("passed")
+        {
+            return Err(AppError::validation(format!(
+                "oss adapter run {} failed holding horizon check: {}",
+                run.oss_adapter_run_id, run.holding_horizon_check_result
+            )));
+        }
+    }
+    Ok(())
+}
+
+async fn read_candidate_bundles_from_ref(
+    artifact_ref: &ResearchArtifactRef,
+) -> AppResult<Vec<IntelCandidateEvidenceBundle>> {
+    match ArtifactLocation::from_uri(&artifact_ref.uri)? {
+        ArtifactLocation::Local(path) => read_candidate_bundles(&path),
+        ArtifactLocation::S3 { bucket, key } => read_candidate_bundles_from_s3(&bucket, &key).await,
+    }
+}
+
+async fn read_market_feature_deltas_from_ref(
+    artifact_ref: &ResearchArtifactRef,
+) -> AppResult<Vec<MarketFeatureDelta>> {
+    match ArtifactLocation::from_uri(&artifact_ref.uri)? {
+        ArtifactLocation::Local(path) => read_market_feature_deltas(&path),
+        ArtifactLocation::S3 { bucket, key } => {
+            read_market_feature_deltas_from_s3(&bucket, std::slice::from_ref(&key)).await
+        }
+    }
+}
+
+async fn read_market_regime_contexts_from_ref(
+    artifact_ref: &ResearchArtifactRef,
+) -> AppResult<Vec<MarketRegimeContext>> {
+    match ArtifactLocation::from_uri(&artifact_ref.uri)? {
+        ArtifactLocation::Local(path) => read_market_regime_contexts(&path),
+        ArtifactLocation::S3 { bucket, key } => {
+            read_market_regime_contexts_from_s3(&bucket, std::slice::from_ref(&key)).await
+        }
+    }
+}
+
+async fn read_replay_runs_from_ref(
+    artifact_ref: &ResearchArtifactRef,
+) -> AppResult<Vec<ReplayRun>> {
+    match ArtifactLocation::from_uri(&artifact_ref.uri)? {
+        ArtifactLocation::Local(path) => read_replay_runs(&path),
+        ArtifactLocation::S3 { bucket, key } => {
+            read_replay_runs_from_s3(&bucket, std::slice::from_ref(&key)).await
+        }
+    }
+}
+
+async fn read_replay_run_index_records_from_ref(
+    artifact_ref: &ResearchArtifactRef,
+) -> AppResult<Vec<ReplayRunIndexRecord>> {
+    match ArtifactLocation::from_uri(&artifact_ref.uri)? {
+        ArtifactLocation::Local(path) => read_replay_run_index_records(&path),
+        ArtifactLocation::S3 { bucket, key } => {
+            read_replay_run_index_records_from_s3(&bucket, std::slice::from_ref(&key)).await
+        }
+    }
+}
+
+async fn read_oss_adapter_runs_from_ref(
+    artifact_ref: &ResearchArtifactRef,
+) -> AppResult<Vec<OssAdapterRun>> {
+    match ArtifactLocation::from_uri(&artifact_ref.uri)? {
+        ArtifactLocation::Local(path) => read_oss_adapter_runs(&path),
+        ArtifactLocation::S3 { bucket, key } => {
+            read_oss_adapter_runs_from_s3(&bucket, std::slice::from_ref(&key)).await
+        }
+    }
+}
+
+enum ArtifactLocation {
+    Local(PathBuf),
+    S3 { bucket: String, key: String },
+}
+
+impl ArtifactLocation {
+    fn from_uri(uri: &str) -> AppResult<Self> {
+        let trimmed = uri.trim();
+        if trimmed.is_empty() {
+            return Err(AppError::config("manifest artifact uri must not be empty"));
+        }
+        if let Some((bucket, key)) = parse_s3_uri(trimmed) {
+            return Ok(Self::S3 { bucket, key });
+        }
+        Ok(Self::Local(PathBuf::from(trimmed)))
+    }
+}
+
+async fn load_replay_runs_from_index_records(
+    records: &[ReplayRunIndexRecord],
+) -> AppResult<Vec<ReplayRun>> {
+    let mut local_locations = BTreeMap::<PathBuf, BTreeSet<String>>::new();
+    let mut s3_locations = BTreeMap::<(String, String), BTreeSet<String>>::new();
+
+    for record in records {
+        if let (Some(bucket), Some(key)) = (
+            record.replay_run_s3_bucket.as_deref(),
+            record.replay_run_s3_key.as_deref(),
+        ) {
+            s3_locations
+                .entry((bucket.to_owned(), key.to_owned()))
+                .or_default()
+                .insert(record.replay_run_id.clone());
+            continue;
+        }
+        if let Some((bucket, key)) = parse_s3_uri(&record.replay_run_uri) {
+            s3_locations
+                .entry((bucket, key))
+                .or_default()
+                .insert(record.replay_run_id.clone());
+            continue;
+        }
+        let path = PathBuf::from(&record.replay_run_uri);
+        if !path.is_absolute() {
+            return Err(AppError::config(format!(
+                "replay_run_index replay_run_uri must be an absolute path or s3 URI: {}",
+                record.replay_run_uri
+            )));
+        }
+        local_locations
+            .entry(path)
+            .or_default()
+            .insert(record.replay_run_id.clone());
+    }
+
+    let mut replay_runs = Vec::new();
+    for (path, expected_ids) in local_locations {
+        let runs = read_replay_runs(&path)?;
+        append_indexed_replay_runs(
+            &mut replay_runs,
+            runs,
+            &expected_ids,
+            &path.display().to_string(),
+        )?;
+    }
+    for ((bucket, key), expected_ids) in s3_locations {
+        let runs = read_replay_runs_from_s3(&bucket, std::slice::from_ref(&key)).await?;
+        append_indexed_replay_runs(
+            &mut replay_runs,
+            runs,
+            &expected_ids,
+            &format!("s3://{bucket}/{key}"),
+        )?;
+    }
+    Ok(replay_runs)
+}
+
+fn append_unique_bundles(
+    target: &mut Vec<IntelCandidateEvidenceBundle>,
+    bundles: Vec<IntelCandidateEvidenceBundle>,
+) {
+    let mut existing_ids = target
+        .iter()
+        .map(|bundle| bundle.candidate_id.clone())
+        .collect::<BTreeSet<_>>();
+    for bundle in bundles {
+        if existing_ids.insert(bundle.candidate_id.clone()) {
+            target.push(bundle);
+        }
+    }
+}
+
+fn append_unique_replay_runs(target: &mut Vec<ReplayRun>, runs: Vec<ReplayRun>) {
+    let mut existing_ids = target
+        .iter()
+        .map(|run| run.replay_run_id.clone())
+        .collect::<BTreeSet<_>>();
+    for run in runs {
+        if existing_ids.insert(run.replay_run_id.clone()) {
+            target.push(run);
+        }
+    }
+}
+
+fn append_unique_oss_adapter_runs(target: &mut Vec<OssAdapterRun>, runs: Vec<OssAdapterRun>) {
+    let mut existing_ids = target
+        .iter()
+        .map(|run| run.oss_adapter_run_id.clone())
+        .collect::<BTreeSet<_>>();
+    for run in runs {
+        if existing_ids.insert(run.oss_adapter_run_id.clone()) {
+            target.push(run);
+        }
+    }
+}
+
+fn append_indexed_replay_runs(
+    target: &mut Vec<ReplayRun>,
+    runs: Vec<ReplayRun>,
+    expected_ids: &BTreeSet<String>,
+    label: &str,
+) -> AppResult<()> {
+    let mut matched_ids = BTreeSet::new();
+    let selected_runs = runs
+        .into_iter()
+        .filter(|run| {
+            let matched = expected_ids.contains(&run.replay_run_id);
+            if matched {
+                matched_ids.insert(run.replay_run_id.clone());
+            }
+            matched
+        })
+        .collect::<Vec<_>>();
+
+    let missing_ids = expected_ids
+        .difference(&matched_ids)
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing_ids.is_empty() {
+        return Err(AppError::validation(format!(
+            "replay_run_index points to missing replay_run_id(s) in {label}: {}",
+            missing_ids.join(",")
+        )));
+    }
+
+    append_unique_replay_runs(target, selected_runs);
+    Ok(())
+}
+
+fn parse_s3_uri(value: &str) -> Option<(String, String)> {
+    let rest = value.strip_prefix("s3://")?;
+    let (bucket, key) = rest.split_once('/')?;
+    if bucket.trim().is_empty() || key.trim().is_empty() {
+        return None;
+    }
+    Some((bucket.to_owned(), key.to_owned()))
+}
+
+fn should_read_market_s3(args: &Args) -> bool {
+    args.input_bundle_s3_bucket.is_some()
+        || args.market_l1_s3_bucket.is_some()
+        || !args.market_feature_delta_s3_keys.is_empty()
+        || !args.market_regime_context_s3_keys.is_empty()
+}
+
+fn market_l1_s3_bucket(args: &Args) -> &str {
+    args.market_l1_s3_bucket
+        .as_deref()
+        .unwrap_or(DEFAULT_MARKET_L1_S3_BUCKET)
+}
+
+fn market_feature_delta_s3_keys(
+    args: &Args,
+    bundles: &[IntelCandidateEvidenceBundle],
+) -> Vec<String> {
+    let mut keys = BTreeSet::new();
+    for key in &args.market_feature_delta_s3_keys {
+        insert_normalized_s3_key(&mut keys, key);
+    }
+    for bundle in bundles {
+        for artifact in &bundle.selected_market_artifacts {
+            if artifact.artifact_type == MARKET_FEATURE_DELTA_ARTIFACT_TYPE
+                && let Some(key) = artifact.artifact_key.as_deref()
+            {
+                insert_normalized_s3_key(&mut keys, key);
+            }
+            if artifact.artifact_type == MARKET_FEATURE_DELTA_SUMMARY_ARTIFACT_TYPE {
+                if let Some(run_id) = artifact.l1_run_id.as_deref() {
+                    keys.insert(format!("market_feature_delta/run_id={run_id}/delta.json"));
+                } else if let Some(key) = artifact.artifact_key.as_deref()
+                    && let Some(run_id) = market_l1_run_id_from_key(key)
+                {
+                    keys.insert(format!("market_feature_delta/run_id={run_id}/delta.json"));
+                }
+            }
+        }
+        if let Some(key) = bundle
+            .data_quality_summary
+            .market_data_quality_summary_key
+            .as_deref()
+            && let Some(run_id) = market_l1_run_id_from_key(key)
+        {
+            keys.insert(format!("market_feature_delta/run_id={run_id}/delta.json"));
+        }
+    }
+    keys.into_iter().collect()
+}
+
+fn market_regime_context_s3_keys(
+    args: &Args,
+    bundles: &[IntelCandidateEvidenceBundle],
+) -> Vec<String> {
+    let mut keys = BTreeSet::new();
+    for key in &args.market_regime_context_s3_keys {
+        insert_normalized_s3_key(&mut keys, key);
+    }
+    for bundle in bundles {
+        for artifact in &bundle.selected_market_artifacts {
+            if artifact.artifact_type == MARKET_REGIME_CONTEXT_ARTIFACT_TYPE
+                && let Some(key) = artifact.artifact_key.as_deref()
+            {
+                insert_normalized_s3_key(&mut keys, key);
+            }
+        }
+        if let Some(key) = bundle
+            .data_quality_summary
+            .market_data_quality_summary_key
+            .as_deref()
+            && let Some(run_id) = market_l1_run_id_from_key(key)
+        {
+            keys.insert(format!(
+                "market_regime_context/run_id={run_id}/context.json"
+            ));
+        }
+    }
+    keys.into_iter().collect()
+}
+
+fn insert_normalized_s3_key(keys: &mut BTreeSet<String>, value: &str) {
+    if let Some(key) = normalize_s3_key(value) {
+        keys.insert(key);
+    }
+}
+
+fn normalize_s3_key(value: &str) -> Option<String> {
+    let trimmed = value.trim().trim_start_matches('/');
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Some(uri_without_scheme) = trimmed.strip_prefix("s3://") {
+        let (_, key) = uri_without_scheme.split_once('/')?;
+        let key = key.trim_start_matches('/').trim();
+        return (!key.is_empty()).then(|| key.to_owned());
+    }
+    Some(trimmed.to_owned())
+}
+
+fn market_l1_run_id_from_key(value: &str) -> Option<String> {
+    let key = normalize_s3_key(value)?;
+    let marker = "run_id=";
+    let start = key.find(marker)? + marker.len();
+    let remainder = &key[start..];
+    let end = remainder.find('/').unwrap_or(remainder.len());
+    let run_id = remainder[..end].trim();
+    (!run_id.is_empty()).then(|| run_id.to_owned())
+}
+
+fn deterministic_report_created_at_ms(bundles: &[IntelCandidateEvidenceBundle]) -> i64 {
+    bundles
+        .iter()
+        .map(|bundle| {
+            bundle
+                .created_at_ms
+                .max(bundle.candidate_created_at_ms)
+                .max(bundle.decision_available_at_ms)
+                .max(bundle.forbidden_lookahead_boundary_ms)
+        })
+        .max()
+        .unwrap_or_else(now_ms)
+}
+
+fn absolute_path_arg(value: Option<String>, message: &str) -> AppResult<PathBuf> {
+    let value = value.ok_or_else(|| AppError::config(message))?;
+    let path = PathBuf::from(value);
+    if !path.is_absolute() {
+        return Err(AppError::config(format!(
+            "{message}; got {}",
+            path.display()
+        )));
+    }
+    Ok(path)
+}
+
+fn non_empty_arg(value: Option<String>, message: &str) -> AppResult<String> {
+    let value = value.ok_or_else(|| AppError::config(message))?;
+    if value.trim().is_empty() {
+        return Err(AppError::config(message));
+    }
+    Ok(value)
+}
+
+fn env_string(name: &str) -> Option<String> {
+    env::var(name).ok().filter(|value| !value.trim().is_empty())
+}
+
+fn env_list(name: &str) -> Vec<String> {
+    env::var(name)
+        .ok()
+        .map(|value| {
+            value
+                .split([',', '\n'])
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn help_text() -> &'static str {
+    r#"research-app
+Usage:
+  research-app \
+    --input-bundle-file /Volumes/WD/Developments/nangman-crypto/data/examples/candidate-bundles.jsonl \
+    --market-feature-delta-file /Volumes/WD/Developments/nangman-crypto/data/examples/market-feature-delta.json \
+    --market-regime-context-file /Volumes/WD/Developments/nangman-crypto/data/examples/market-regime-context.json \
+    --output-dir /Volumes/WD/Developments/nangman-crypto/data/reports/research-local
+
+Batch research input can be declared with a manifest:
+  --input-manifest-file /Volumes/WD/Developments/nangman-crypto/data/examples/research-input-manifest.json
+  --input-manifest-s3-bucket nangman-crypto-dev-research-<account-suffix>
+  --input-manifest-s3-key research-input-manifest/schema=research_input_manifest_v1/run_id=.../manifest.json
+
+Market L1 replay input can be loaded from S3 in ECS:
+  --market-l1-s3-bucket nangman-crypto-dev-market-ingest-l1-<account-suffix>
+  --market-feature-delta-s3-key market_feature_delta/run_id=l1_.../delta.json
+  --market-regime-context-s3-key market_regime_context/run_id=l1_.../context.json
+  --historical-replay-run-s3-bucket nangman-crypto-dev-research-<account-suffix>
+  --historical-replay-run-s3-key replay-run/schema=replay_run_v1/dt=.../part-000001.jsonl
+  --historical-replay-run-index-s3-bucket nangman-crypto-dev-research-<account-suffix>
+  --historical-replay-run-index-s3-key replay-run-index/schema=replay_run_index_v1/dt=.../part-000001.jsonl
+
+ECS input and output can also come from environment:
+  RESEARCH_INPUT_MANIFEST_S3_BUCKET
+  RESEARCH_INPUT_MANIFEST_S3_KEY
+  RESEARCH_INPUT_S3_BUCKET
+  RESEARCH_INPUT_S3_KEY
+  RESEARCH_MARKET_L1_S3_BUCKET
+  RESEARCH_MARKET_FEATURE_DELTA_S3_KEYS
+  RESEARCH_MARKET_REGIME_CONTEXT_S3_KEYS
+  RESEARCH_HISTORICAL_REPLAY_RUN_S3_BUCKET
+  RESEARCH_HISTORICAL_REPLAY_RUN_S3_KEYS
+  RESEARCH_HISTORICAL_REPLAY_RUN_INDEX_S3_BUCKET
+  RESEARCH_HISTORICAL_REPLAY_RUN_INDEX_S3_KEYS
+  RESEARCH_OUTPUT_S3_BUCKET
+  RESEARCH_OUTPUT_S3_PREFIX
+
+Without --output-dir, the app prints research_run_report_v1 to stdout.
+This app does not execute orders, does not approve live trading, and does not emit EXECUTION_APPROVED or LIVE_READY."#
+}
+
+#[cfg(test)]
+#[path = "cli_tests.rs"]
+mod tests;

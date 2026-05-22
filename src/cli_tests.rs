@@ -1,0 +1,1490 @@
+use super::*;
+use crate::time::now_ms;
+use serde_json::{Value, json};
+use std::fs;
+use std::path::{Path, PathBuf};
+
+const DAY_MS: i64 = 24 * 60 * 60 * 1000;
+
+fn test_root(name: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "research-app-{name}-{}-{}",
+        std::process::id(),
+        now_ms()
+    ))
+}
+
+fn write_json(path: &Path, value: &Value) {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).expect("test parent directory is created");
+    }
+    fs::write(
+        path,
+        serde_json::to_vec_pretty(value).expect("test json serializes"),
+    )
+    .expect("test json is written");
+}
+
+fn output_file_containing(summary: &RunSummary, needle: &str) -> PathBuf {
+    summary
+        .output_files
+        .iter()
+        .find(|path| path.contains(needle))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| panic!("expected output file containing {needle}"))
+}
+
+fn bundle_json() -> Value {
+    json!({
+        "candidate_id": "cand_001",
+        "candidate_lifecycle_key": "cand_001:v1",
+        "bundle_key": "candidate-evidence-bundle/priority=p0/schema=intel_candidate_evidence_bundle_v1/part-000001.jsonl",
+        "producer_app": "intel-candidate-app",
+        "producer_run_id": "run_001",
+        "created_at_ms": 7_200_000,
+        "event_time_ms": 1_000,
+        "published_at_ms": 1_000,
+        "fetched_at_ms": 1_100,
+        "structured_at_ms": 1_200,
+        "candidate_created_at_ms": 1_300,
+        "decision_available_at_ms": 1_300,
+        "forbidden_lookahead_boundary_ms": 1_300,
+        "schema_version": "intel_candidate_evidence_bundle_v1",
+        "scoring_policy_version": "scoring-policy.v1",
+        "normalized_symbols": ["SUI"],
+        "symbol_universe_snapshot_id": "universe_001",
+        "universe_as_of_ms": 1_200,
+        "approved_universe_symbol": true,
+        "event_types": ["project_notice"],
+        "hypothesis_type": "event_reaction",
+        "allowed_horizons": ["1h"],
+        "source_story_cluster_ids": ["cluster_001"],
+        "source_structured_packet_ids": ["packet_001"],
+        "source_context_flag_packet_ids": [],
+        "evidence_refs": ["packet_001"],
+        "metric_evidence": [],
+        "data_quality_summary": {
+            "market_data_quality_summary_key": "market_data_quality_summary/run/summary.json",
+            "status": "available"
+        },
+        "selected_market_artifacts": [],
+        "candidate_class": "research_candidate",
+        "candidate_score": 72,
+        "research_priority": "p0",
+        "research_eligible": true,
+        "validation_requirements": {
+            "required_adapters": ["native_replay"],
+            "optional_adapters": ["freqtrade_style"],
+            "min_unseen_windows": 1,
+            "include_fee": true,
+            "include_slippage": true,
+            "include_latency_assumption": true,
+            "include_liquidity_filter": true,
+            "required_train_validation_split": true,
+            "max_adapter_runtime_minutes": 15
+        },
+        "source_independence": {
+            "source_event_count": 1,
+            "independent_source_count": 1,
+            "official_source_present": true,
+            "duplicate_content_hashes": [],
+            "original_source_ids": ["official"]
+        },
+        "symbol_resolution_trace": [{
+            "raw_mentions": ["SUI"],
+            "resolved_project": "Sui",
+            "resolved_asset": "SUI",
+            "canonical_symbol": "SUI",
+            "venue_symbols": ["SUIUSDT"],
+            "mapping_confidence": "strong"
+        }],
+        "confidence_summary": {},
+        "observe_or_reject_reasons": [],
+        "parent_artifact_ids": ["packet_001"],
+        "storage_uri": "s3://bucket/key",
+        "checksum": "checksum",
+        "idempotency_key": "idem_001"
+    })
+}
+
+fn bundle_json_with_gate_inputs(index: usize, decision_ms: i64) -> Value {
+    let mut bundle = bundle_json();
+    bundle["candidate_id"] = json!(format!("cand_{index:03}"));
+    bundle["candidate_lifecycle_key"] = json!(format!("cand_{index:03}:v1"));
+    bundle["idempotency_key"] = json!(format!("idem_{index:03}"));
+    bundle["created_at_ms"] = json!(decision_ms);
+    bundle["event_time_ms"] = json!(decision_ms - 300);
+    bundle["published_at_ms"] = json!(decision_ms - 250);
+    bundle["fetched_at_ms"] = json!(decision_ms - 200);
+    bundle["structured_at_ms"] = json!(decision_ms - 100);
+    bundle["candidate_created_at_ms"] = json!(decision_ms);
+    bundle["decision_available_at_ms"] = json!(decision_ms);
+    bundle["forbidden_lookahead_boundary_ms"] = json!(decision_ms);
+    bundle["universe_as_of_ms"] = json!(decision_ms - 100);
+    bundle["validation_requirements"]["min_unseen_windows"] = json!(1);
+    bundle["validation_requirements"]["include_liquidity_filter"] = json!(false);
+    bundle["validation_requirements"]["required_train_validation_split"] = json!(true);
+    bundle
+}
+
+fn market_delta_json(
+    feature_delta_id: &str,
+    window_start_ms: i64,
+    window_end_ms: i64,
+    price_change_same_window: f64,
+) -> Value {
+    json!({
+        "schema_version": "market_feature_delta_v1",
+        "feature_delta_id": feature_delta_id,
+        "l1_run_id": "l1_001",
+        "metric_name": "price",
+        "venue": "binance",
+        "symbol_native": "SUIUSDT",
+        "symbol_canonical": "SUI",
+        "market_type": "spot",
+        "value_now": 1.0,
+        "price_change_same_window": price_change_same_window,
+        "window_start_ms": window_start_ms,
+        "window_end_ms": window_end_ms,
+        "known_as_of_ms": window_end_ms + 100,
+        "quality_status": "available",
+        "missing_reasons": []
+    })
+}
+
+fn market_regime_json(regime_context_id: &str, window_start_ms: i64, window_end_ms: i64) -> Value {
+    json!({
+        "schema_version": "market_regime_context_v1",
+        "regime_context_id": regime_context_id,
+        "l1_run_id": "l1_001",
+        "scope": "market",
+        "window_start_ms": window_start_ms,
+        "window_end_ms": window_end_ms,
+        "btc_return_same_window": 0.0,
+        "eth_return_same_window": 0.0,
+        "sector_return_same_window": 0.0,
+        "volatility_regime": "low_volatility",
+        "correlation_to_btc": 0.2,
+        "known_as_of_ms": window_end_ms + 100,
+        "quality_status": "available",
+        "missing_reasons": []
+    })
+}
+
+fn oss_adapter_run_json(candidate_lifecycle_key: &str, verdict: &str) -> Value {
+    json!({
+        "schema_version": "oss_adapter_run_v1",
+        "oss_adapter_run_id": format!("oss_run_{candidate_lifecycle_key}_{verdict}"),
+        "adapter_name": "vectorbt",
+        "adapter_version": "test",
+        "candidate_lifecycle_key": candidate_lifecycle_key,
+        "input_artifact_refs": ["candidate_bundle"],
+        "market_window": "test_window",
+        "fee_model_used": "test_fee",
+        "slippage_model_used": "test_slippage",
+        "trade_count": 3,
+        "net_return_bps": 12.0,
+        "max_drawdown_bps": 5.0,
+        "profit_factor": 1.5,
+        "sharpe_like_score": 0.7,
+        "lookahead_check_result": "passed",
+        "holding_horizon_check_result": "passed",
+        "adapter_warnings": [],
+        "normalized_verdict_bias": verdict
+    })
+}
+
+#[test]
+fn parse_args_requires_absolute_input_path() {
+    let error = parse_args(
+        [
+            "--input-bundle-file".to_owned(),
+            "relative.jsonl".to_owned(),
+        ]
+        .into_iter(),
+    )
+    .expect_err("relative path should fail");
+    assert!(error.to_string().contains("absolute path"));
+}
+
+#[tokio::test]
+async fn valid_bundle_without_market_data_becomes_retest_report() {
+    let root = test_root("missing-market");
+    let input = root.join("bundles.jsonl");
+    let output = root.join("out");
+    write_json(&input, &bundle_json());
+
+    let summary = run(Args {
+        input_manifest_file: None,
+        input_manifest_s3_bucket: None,
+        input_manifest_s3_key: None,
+        input_bundle_file: Some(input),
+        input_bundle_s3_bucket: None,
+        input_bundle_s3_key: None,
+        market_feature_delta_file: None,
+        market_regime_context_file: None,
+        market_l1_s3_bucket: None,
+        market_feature_delta_s3_keys: Vec::new(),
+        market_regime_context_s3_keys: Vec::new(),
+        historical_replay_run_files: Vec::new(),
+        historical_replay_run_index_files: Vec::new(),
+        oss_adapter_run_files: Vec::new(),
+        oss_adapter_run_s3_bucket: None,
+        oss_adapter_run_s3_keys: Vec::new(),
+        historical_replay_run_s3_bucket: None,
+        historical_replay_run_s3_keys: Vec::new(),
+        historical_replay_run_index_s3_bucket: None,
+        historical_replay_run_index_s3_keys: Vec::new(),
+        output_dir: Some(output.clone()),
+        output_s3_bucket: None,
+        output_s3_prefix: None,
+        research_packet_id: "packet_test".to_owned(),
+        run_scope: "test".to_owned(),
+        now_ms: Some(1_800_000),
+    })
+    .await
+    .expect("run succeeds");
+
+    assert_eq!(summary.processed_bundles, 1);
+    assert_eq!(summary.replay_runs_created, 1);
+    let report_text = fs::read_to_string(&summary.output_files[0]).expect("report exists");
+    assert!(report_text.contains("RETEST_BIAS"));
+    assert!(report_text.contains("missing_native_replay_market_data"));
+    assert!(!report_text.contains("EXECUTION_APPROVED"));
+    assert!(!report_text.contains("LIVE_READY"));
+}
+
+#[tokio::test]
+async fn horizon_over_72h_is_invalid_input() {
+    let root = test_root("holding-horizon");
+    let input = root.join("bundles.jsonl");
+    let output = root.join("out");
+    let mut bundle = bundle_json();
+    bundle["allowed_horizons"] = json!(["7d"]);
+    write_json(&input, &bundle);
+
+    let summary = run(Args {
+        input_manifest_file: None,
+        input_manifest_s3_bucket: None,
+        input_manifest_s3_key: None,
+        input_bundle_file: Some(input),
+        input_bundle_s3_bucket: None,
+        input_bundle_s3_key: None,
+        market_feature_delta_file: None,
+        market_regime_context_file: None,
+        market_l1_s3_bucket: None,
+        market_feature_delta_s3_keys: Vec::new(),
+        market_regime_context_s3_keys: Vec::new(),
+        historical_replay_run_files: Vec::new(),
+        historical_replay_run_index_files: Vec::new(),
+        oss_adapter_run_files: Vec::new(),
+        oss_adapter_run_s3_bucket: None,
+        oss_adapter_run_s3_keys: Vec::new(),
+        historical_replay_run_s3_bucket: None,
+        historical_replay_run_s3_keys: Vec::new(),
+        historical_replay_run_index_s3_bucket: None,
+        historical_replay_run_index_s3_keys: Vec::new(),
+        output_dir: Some(output),
+        output_s3_bucket: None,
+        output_s3_prefix: None,
+        research_packet_id: "packet_test".to_owned(),
+        run_scope: "test".to_owned(),
+        now_ms: Some(1_800_000),
+    })
+    .await
+    .expect("run succeeds with invalid replay record");
+
+    let report_text = fs::read_to_string(&summary.output_files[0]).expect("report exists");
+    assert!(report_text.contains("holding_horizon_contract_violation"));
+    assert!(report_text.contains("invalid_input"));
+    assert_eq!(summary.shadow_validation_runs_created, 0);
+}
+
+#[tokio::test]
+async fn oss_adapter_prune_bias_blocks_candidate_even_when_native_retest() {
+    let root = test_root("oss-prune");
+    let input = root.join("bundles.jsonl");
+    let oss = root.join("oss.json");
+    let output = root.join("out");
+    write_json(&input, &bundle_json());
+    write_json(&oss, &oss_adapter_run_json("cand_001:v1", "PRUNE_BIAS"));
+
+    let summary = run(Args {
+        input_manifest_file: None,
+        input_manifest_s3_bucket: None,
+        input_manifest_s3_key: None,
+        input_bundle_file: Some(input),
+        input_bundle_s3_bucket: None,
+        input_bundle_s3_key: None,
+        market_feature_delta_file: None,
+        market_regime_context_file: None,
+        market_l1_s3_bucket: None,
+        market_feature_delta_s3_keys: Vec::new(),
+        market_regime_context_s3_keys: Vec::new(),
+        historical_replay_run_files: Vec::new(),
+        historical_replay_run_index_files: Vec::new(),
+        oss_adapter_run_files: vec![oss],
+        oss_adapter_run_s3_bucket: None,
+        oss_adapter_run_s3_keys: Vec::new(),
+        historical_replay_run_s3_bucket: None,
+        historical_replay_run_s3_keys: Vec::new(),
+        historical_replay_run_index_s3_bucket: None,
+        historical_replay_run_index_s3_keys: Vec::new(),
+        output_dir: Some(output),
+        output_s3_bucket: None,
+        output_s3_prefix: None,
+        research_packet_id: "packet_test".to_owned(),
+        run_scope: "test".to_owned(),
+        now_ms: Some(1_800_000),
+    })
+    .await
+    .expect("run succeeds");
+
+    let report: Value =
+        serde_json::from_str(&fs::read_to_string(&summary.output_files[0]).expect("report exists"))
+            .expect("report json parses");
+    assert_eq!(summary.oss_adapter_runs_loaded, 1);
+    assert_eq!(report["summary_findings"][0]["bias"], json!("PRUNE_BIAS"));
+    assert_eq!(report["oss_adapter_reject_count"], json!(1));
+    assert!(
+        report["summary_findings"][0]["reason_codes"]
+            .as_array()
+            .expect("reason codes")
+            .contains(&json!("oss_adapter_prune_bias"))
+    );
+}
+
+#[tokio::test]
+async fn oss_adapter_holding_violation_fails_before_report() {
+    let root = test_root("oss-holding-violation");
+    let input = root.join("bundles.jsonl");
+    let oss = root.join("oss.json");
+    let output = root.join("out");
+    let mut adapter = oss_adapter_run_json("cand_001:v1", "RETEST_BIAS");
+    adapter["holding_horizon_check_result"] = json!("holding_horizon_contract_violation");
+    write_json(&input, &bundle_json());
+    write_json(&oss, &adapter);
+
+    let error = run(Args {
+        input_manifest_file: None,
+        input_manifest_s3_bucket: None,
+        input_manifest_s3_key: None,
+        input_bundle_file: Some(input),
+        input_bundle_s3_bucket: None,
+        input_bundle_s3_key: None,
+        market_feature_delta_file: None,
+        market_regime_context_file: None,
+        market_l1_s3_bucket: None,
+        market_feature_delta_s3_keys: Vec::new(),
+        market_regime_context_s3_keys: Vec::new(),
+        historical_replay_run_files: Vec::new(),
+        historical_replay_run_index_files: Vec::new(),
+        oss_adapter_run_files: vec![oss],
+        oss_adapter_run_s3_bucket: None,
+        oss_adapter_run_s3_keys: Vec::new(),
+        historical_replay_run_s3_bucket: None,
+        historical_replay_run_s3_keys: Vec::new(),
+        historical_replay_run_index_s3_bucket: None,
+        historical_replay_run_index_s3_keys: Vec::new(),
+        output_dir: Some(output),
+        output_s3_bucket: None,
+        output_s3_prefix: None,
+        research_packet_id: "packet_test".to_owned(),
+        run_scope: "test".to_owned(),
+        now_ms: Some(1_800_000),
+    })
+    .await
+    .expect_err("holding horizon violation must fail");
+
+    assert!(error.to_string().contains("holding horizon check"));
+}
+
+#[tokio::test]
+async fn negative_market_replay_prunes_candidate() {
+    let root = test_root("negative-market");
+    let input = root.join("bundles.jsonl");
+    let delta = root.join("delta.json");
+    let output = root.join("out");
+    write_json(&input, &bundle_json());
+    write_json(
+        &delta,
+        &json!([{
+            "schema_version": "market_feature_delta_v1",
+            "feature_delta_id": "delta_001",
+            "l1_run_id": "l1_001",
+            "metric_name": "price",
+            "venue": "binance",
+            "symbol_native": "SUIUSDT",
+            "symbol_canonical": "SUI",
+            "market_type": "spot",
+            "value_now": 1.0,
+            "price_change_same_window": -0.3,
+            "window_start_ms": 1_300,
+            "window_end_ms": 3_601_300,
+            "known_as_of_ms": 3_601_400,
+            "quality_status": "available",
+            "missing_reasons": []
+        }]),
+    );
+
+    let summary = run(Args {
+        input_manifest_file: None,
+        input_manifest_s3_bucket: None,
+        input_manifest_s3_key: None,
+        input_bundle_file: Some(input),
+        input_bundle_s3_bucket: None,
+        input_bundle_s3_key: None,
+        market_feature_delta_file: Some(delta),
+        market_regime_context_file: None,
+        market_l1_s3_bucket: None,
+        market_feature_delta_s3_keys: Vec::new(),
+        market_regime_context_s3_keys: Vec::new(),
+        historical_replay_run_files: Vec::new(),
+        historical_replay_run_index_files: Vec::new(),
+        oss_adapter_run_files: Vec::new(),
+        oss_adapter_run_s3_bucket: None,
+        oss_adapter_run_s3_keys: Vec::new(),
+        historical_replay_run_s3_bucket: None,
+        historical_replay_run_s3_keys: Vec::new(),
+        historical_replay_run_index_s3_bucket: None,
+        historical_replay_run_index_s3_keys: Vec::new(),
+        output_dir: Some(output),
+        output_s3_bucket: None,
+        output_s3_prefix: None,
+        research_packet_id: "packet_test".to_owned(),
+        run_scope: "test".to_owned(),
+        now_ms: Some(1_800_000),
+    })
+    .await
+    .expect("run succeeds");
+
+    let report_text = fs::read_to_string(&summary.output_files[0]).expect("report exists");
+    assert!(report_text.contains("PRUNE_BIAS"));
+    assert!(report_text.contains("native_replay_net_edge_non_positive"));
+}
+
+#[tokio::test]
+async fn positive_single_replay_stays_retest_until_gate_evidence_exists() {
+    let root = test_root("positive-single-gated");
+    let input = root.join("bundles.jsonl");
+    let delta = root.join("delta.json");
+    let regime = root.join("regime.json");
+    let output = root.join("out");
+    write_json(&input, &bundle_json());
+    write_json(
+        &delta,
+        &json!([market_delta_json("delta_001", 1_300, 3_601_300, 0.5)]),
+    );
+    write_json(
+        &regime,
+        &json!([market_regime_json("regime_001", 1_300, 3_601_300)]),
+    );
+
+    let summary = run(Args {
+        input_manifest_file: None,
+        input_manifest_s3_bucket: None,
+        input_manifest_s3_key: None,
+        input_bundle_file: Some(input),
+        input_bundle_s3_bucket: None,
+        input_bundle_s3_key: None,
+        market_feature_delta_file: Some(delta),
+        market_regime_context_file: Some(regime),
+        market_l1_s3_bucket: None,
+        market_feature_delta_s3_keys: Vec::new(),
+        market_regime_context_s3_keys: Vec::new(),
+        historical_replay_run_files: Vec::new(),
+        historical_replay_run_index_files: Vec::new(),
+        oss_adapter_run_files: Vec::new(),
+        oss_adapter_run_s3_bucket: None,
+        oss_adapter_run_s3_keys: Vec::new(),
+        historical_replay_run_s3_bucket: None,
+        historical_replay_run_s3_keys: Vec::new(),
+        historical_replay_run_index_s3_bucket: None,
+        historical_replay_run_index_s3_keys: Vec::new(),
+        output_dir: Some(output),
+        output_s3_bucket: None,
+        output_s3_prefix: None,
+        research_packet_id: "packet_test".to_owned(),
+        run_scope: "test".to_owned(),
+        now_ms: Some(1_800_000),
+    })
+    .await
+    .expect("run succeeds");
+    assert_eq!(summary.shadow_validation_runs_created, 0);
+
+    let report: Value =
+        serde_json::from_str(&fs::read_to_string(&summary.output_files[0]).expect("report exists"))
+            .expect("report json parses");
+    assert_eq!(report["summary_findings"][0]["bias"], json!("RETEST_BIAS"));
+    assert_eq!(report["shadow_validation_runs"], json!([]));
+    let gate_reasons = report["partition_aggregates"][0]["gate_reason_codes"]
+        .as_array()
+        .expect("gate reasons are an array");
+    assert!(gate_reasons.contains(&json!("promotion_sample_count_below_minimum")));
+    assert!(gate_reasons.contains(&json!("train_validation_split_not_materialized")));
+    assert!(gate_reasons.contains(&json!("liquidity_filter_not_materialized")));
+
+    let replay_index_file = output_file_containing(&summary, "/replay-run-index/");
+    let replay_index_text =
+        fs::read_to_string(&replay_index_file).expect("replay index output exists");
+    let replay_index: Value = serde_json::from_str(
+        replay_index_text
+            .lines()
+            .next()
+            .expect("replay index has one line"),
+    )
+    .expect("replay index line parses");
+    assert_eq!(replay_index["schema_version"], json!("replay_run_index_v1"));
+    assert_eq!(
+        replay_index["research_aggregate_key"],
+        report["partition_aggregates"][0]["research_aggregate_key"]
+    );
+    assert!(
+        replay_index["replay_run_uri"]
+            .as_str()
+            .expect("replay run uri is present")
+            .contains("/replay-run/")
+    );
+    assert_eq!(replay_index["replay_run_s3_bucket"], Value::Null);
+    assert_eq!(replay_index["replay_run_s3_key"], Value::Null);
+
+    let registry_file = output_file_containing(&summary, "/research-aggregate-registry/");
+    let registry_text = fs::read_to_string(&registry_file).expect("registry output exists");
+    let registry: Value = serde_json::from_str(
+        registry_text
+            .lines()
+            .next()
+            .expect("registry output has one line"),
+    )
+    .expect("registry line parses");
+    assert_eq!(
+        registry["schema_version"],
+        json!("research_aggregate_registry_record_v1")
+    );
+    assert_eq!(registry["current_research_stage"], json!("retest"));
+    assert_eq!(registry["gate_bias"], json!("RETEST_BIAS"));
+    assert_eq!(registry["linked_shadow_validation_run_ids"], json!([]));
+    assert!(!registry_text.contains("EXECUTION_APPROVED"));
+    assert!(!registry_text.contains("LIVE_READY"));
+}
+
+#[tokio::test]
+async fn aggregate_gate_promotes_only_to_shadow_when_enterprise_blockers_clear() {
+    let root = test_root("aggregate-shadow");
+    let input = root.join("bundles.json");
+    let delta = root.join("delta.json");
+    let regime = root.join("regime.json");
+    let output = root.join("out");
+    let mut bundles = Vec::new();
+    let mut deltas = Vec::new();
+    let mut regimes = Vec::new();
+
+    for index in 0..31 {
+        let decision_ms = 1_300 + (index as i64 * 3_600_000);
+        let window_end_ms = decision_ms + 3_600_000;
+        bundles.push(bundle_json_with_gate_inputs(index, decision_ms));
+        deltas.push(market_delta_json(
+            &format!("delta_{index:03}"),
+            decision_ms,
+            window_end_ms,
+            0.5,
+        ));
+        regimes.push(market_regime_json(
+            &format!("regime_{index:03}"),
+            decision_ms,
+            window_end_ms,
+        ));
+    }
+
+    write_json(&input, &Value::Array(bundles));
+    write_json(&delta, &Value::Array(deltas));
+    write_json(&regime, &Value::Array(regimes));
+
+    let summary = run(Args {
+        input_manifest_file: None,
+        input_manifest_s3_bucket: None,
+        input_manifest_s3_key: None,
+        input_bundle_file: Some(input),
+        input_bundle_s3_bucket: None,
+        input_bundle_s3_key: None,
+        market_feature_delta_file: Some(delta),
+        market_regime_context_file: Some(regime),
+        market_l1_s3_bucket: None,
+        market_feature_delta_s3_keys: Vec::new(),
+        market_regime_context_s3_keys: Vec::new(),
+        historical_replay_run_files: Vec::new(),
+        historical_replay_run_index_files: Vec::new(),
+        oss_adapter_run_files: Vec::new(),
+        oss_adapter_run_s3_bucket: None,
+        oss_adapter_run_s3_keys: Vec::new(),
+        historical_replay_run_s3_bucket: None,
+        historical_replay_run_s3_keys: Vec::new(),
+        historical_replay_run_index_s3_bucket: None,
+        historical_replay_run_index_s3_keys: Vec::new(),
+        output_dir: Some(output),
+        output_s3_bucket: None,
+        output_s3_prefix: None,
+        research_packet_id: "packet_test".to_owned(),
+        run_scope: "test".to_owned(),
+        now_ms: Some(120_000_000),
+    })
+    .await
+    .expect("run succeeds");
+    assert_eq!(summary.shadow_validation_runs_created, 31);
+    let shadow_output_file = output_file_containing(&summary, "/shadow-validation-run/");
+    let shadow_output_text =
+        fs::read_to_string(&shadow_output_file).expect("shadow validation output exists");
+    assert_eq!(shadow_output_text.lines().count(), 31);
+    assert!(!shadow_output_text.contains("EXECUTION_APPROVED"));
+    assert!(!shadow_output_text.contains("LIVE_READY"));
+
+    let report: Value =
+        serde_json::from_str(&fs::read_to_string(&summary.output_files[0]).expect("report exists"))
+            .expect("report json parses");
+    assert_eq!(
+        report["partition_aggregates"][0]["gate_bias"],
+        json!("PROMOTE_TO_SHADOW_BIAS")
+    );
+    assert_eq!(report["paper_trade_candidates"], json!([]));
+    assert_eq!(
+        report["research_gate_policy"]["allow_promote_to_paper_bias"],
+        json!(false)
+    );
+    assert_eq!(
+        report["partition_aggregates"][0]["train_validation_split_summary"]["passed"],
+        json!(true)
+    );
+    assert_eq!(
+        report["partition_aggregates"][0]["cost_stressed_mean_net_after_cost_bps"],
+        json!(16.0)
+    );
+    assert_eq!(
+        report["partition_aggregates"][0]["gate_reason_codes"],
+        json!(["deterministic_shadow_gate_passed"])
+    );
+    assert_eq!(
+        report["partition_aggregates"][0]["completed_count"],
+        json!(31)
+    );
+    assert_eq!(
+        report["partition_aggregates"][0]["inferred_unseen_window_count"],
+        json!(30)
+    );
+    assert_eq!(
+        report["shadow_validation_runs"]
+            .as_array()
+            .expect("shadow run ids are present")
+            .len(),
+        31
+    );
+    assert_eq!(
+        report["shadow_validation_runs"][0]["schema_version"],
+        json!("shadow_validation_run_v1")
+    );
+    assert_eq!(
+        report["shadow_validation_runs"][0]["watch_window_policy"]["mode"],
+        json!("forward_observation_only")
+    );
+    assert_eq!(
+        report["shadow_validation_runs"][0]["termination_policy"]["no_order_execution"],
+        json!(true)
+    );
+    let registry_file = output_file_containing(&summary, "/research-aggregate-registry/");
+    let registry_text = fs::read_to_string(&registry_file).expect("registry output exists");
+    let registry: Value = serde_json::from_str(
+        registry_text
+            .lines()
+            .next()
+            .expect("registry output has one line"),
+    )
+    .expect("registry line parses");
+    assert_eq!(
+        registry["current_research_stage"],
+        json!("shadow_candidate")
+    );
+    assert_eq!(registry["gate_bias"], json!("PROMOTE_TO_SHADOW_BIAS"));
+    assert_eq!(
+        registry["linked_shadow_validation_run_ids"]
+            .as_array()
+            .expect("shadow validation ids are recorded")
+            .len(),
+        31
+    );
+    let report_text = serde_json::to_string(&report).expect("report serializes");
+    assert!(!report_text.contains("EXECUTION_APPROVED"));
+    assert!(!report_text.contains("LIVE_READY"));
+}
+
+#[tokio::test]
+async fn portfolio_rejects_critical_event_symbol_and_emits_reduce_only() {
+    let root = test_root("portfolio-critical");
+    let input = root.join("bundles.json");
+    let delta = root.join("delta.json");
+    let regime = root.join("regime.json");
+    let output = root.join("out");
+    let mut bundles = Vec::new();
+    let mut deltas = Vec::new();
+    let mut regimes = Vec::new();
+
+    for index in 0..31 {
+        let decision_ms = 1_300 + (index as i64 * 3_600_000);
+        let window_end_ms = decision_ms + 3_600_000;
+        let mut bundle = bundle_json_with_gate_inputs(index, decision_ms);
+        if index == 0 {
+            bundle["event_types"] = json!(["exchange_delisting"]);
+        }
+        bundles.push(bundle);
+        deltas.push(market_delta_json(
+            &format!("delta_{index:03}"),
+            decision_ms,
+            window_end_ms,
+            0.5,
+        ));
+        regimes.push(market_regime_json(
+            &format!("regime_{index:03}"),
+            decision_ms,
+            window_end_ms,
+        ));
+    }
+
+    write_json(&input, &Value::Array(bundles));
+    write_json(&delta, &Value::Array(deltas));
+    write_json(&regime, &Value::Array(regimes));
+
+    let summary = run(Args {
+        input_manifest_file: None,
+        input_manifest_s3_bucket: None,
+        input_manifest_s3_key: None,
+        input_bundle_file: Some(input),
+        input_bundle_s3_bucket: None,
+        input_bundle_s3_key: None,
+        market_feature_delta_file: Some(delta),
+        market_regime_context_file: Some(regime),
+        market_l1_s3_bucket: None,
+        market_feature_delta_s3_keys: Vec::new(),
+        market_regime_context_s3_keys: Vec::new(),
+        historical_replay_run_files: Vec::new(),
+        historical_replay_run_index_files: Vec::new(),
+        oss_adapter_run_files: Vec::new(),
+        oss_adapter_run_s3_bucket: None,
+        oss_adapter_run_s3_keys: Vec::new(),
+        historical_replay_run_s3_bucket: None,
+        historical_replay_run_s3_keys: Vec::new(),
+        historical_replay_run_index_s3_bucket: None,
+        historical_replay_run_index_s3_keys: Vec::new(),
+        output_dir: Some(output),
+        output_s3_bucket: None,
+        output_s3_prefix: None,
+        research_packet_id: "packet_test".to_owned(),
+        run_scope: "test".to_owned(),
+        now_ms: Some(120_000_000),
+    })
+    .await
+    .expect("run succeeds");
+
+    assert!(summary.portfolio_risk_reject_events_created > 0);
+    assert_eq!(summary.portfolio_reduce_only_signals_created, 1);
+    let report: Value =
+        serde_json::from_str(&fs::read_to_string(&summary.output_files[0]).expect("report exists"))
+            .expect("report json parses");
+    assert_eq!(
+        report["portfolio_allocation_snapshot"]["max_total_notional_pct"],
+        json!(0.0)
+    );
+    assert!(
+        report["portfolio_allocation_snapshot"]["reason_codes"]
+            .as_array()
+            .expect("reason codes")
+            .contains(&json!("exchange_delisting"))
+    );
+    let reduce_only_file = output_file_containing(&summary, "/portfolio-reduce-only-signal/");
+    let reduce_only_text = fs::read_to_string(&reduce_only_file).expect("reduce-only exists");
+    assert!(reduce_only_text.contains("exchange_delisting"));
+}
+
+#[tokio::test]
+async fn historical_replay_runs_are_loaded_into_decay_aware_aggregate() {
+    let root = test_root("historical-aggregate");
+    let history_input = root.join("history-bundles.json");
+    let history_delta = root.join("history-delta.json");
+    let history_regime = root.join("history-regime.json");
+    let history_output = root.join("history-out");
+    let mut history_bundles = Vec::new();
+    let mut history_deltas = Vec::new();
+    let mut history_regimes = Vec::new();
+
+    for index in 0..30 {
+        let decision_ms = 1_300 + (index as i64 * 3_600_000);
+        let window_end_ms = decision_ms + 3_600_000;
+        history_bundles.push(bundle_json_with_gate_inputs(index, decision_ms));
+        history_deltas.push(market_delta_json(
+            &format!("history_delta_{index:03}"),
+            decision_ms,
+            window_end_ms,
+            0.5,
+        ));
+        history_regimes.push(market_regime_json(
+            &format!("history_regime_{index:03}"),
+            decision_ms,
+            window_end_ms,
+        ));
+    }
+
+    write_json(&history_input, &Value::Array(history_bundles));
+    write_json(&history_delta, &Value::Array(history_deltas));
+    write_json(&history_regime, &Value::Array(history_regimes));
+
+    let history_summary = run(Args {
+        input_manifest_file: None,
+        input_manifest_s3_bucket: None,
+        input_manifest_s3_key: None,
+        input_bundle_file: Some(history_input),
+        input_bundle_s3_bucket: None,
+        input_bundle_s3_key: None,
+        market_feature_delta_file: Some(history_delta),
+        market_regime_context_file: Some(history_regime),
+        market_l1_s3_bucket: None,
+        market_feature_delta_s3_keys: Vec::new(),
+        market_regime_context_s3_keys: Vec::new(),
+        historical_replay_run_files: Vec::new(),
+        historical_replay_run_index_files: Vec::new(),
+        oss_adapter_run_files: Vec::new(),
+        oss_adapter_run_s3_bucket: None,
+        oss_adapter_run_s3_keys: Vec::new(),
+        historical_replay_run_s3_bucket: None,
+        historical_replay_run_s3_keys: Vec::new(),
+        historical_replay_run_index_s3_bucket: None,
+        historical_replay_run_index_s3_keys: Vec::new(),
+        output_dir: Some(history_output),
+        output_s3_bucket: None,
+        output_s3_prefix: None,
+        research_packet_id: "packet_test".to_owned(),
+        run_scope: "test".to_owned(),
+        now_ms: Some(120_000_000),
+    })
+    .await
+    .expect("history run succeeds");
+    assert_eq!(history_summary.replay_runs_created, 30);
+    assert_eq!(history_summary.shadow_validation_runs_created, 30);
+    let history_index_file = output_file_containing(&history_summary, "/replay-run-index/");
+
+    let current_input = root.join("current-bundles.json");
+    let current_delta = root.join("current-delta.json");
+    let current_regime = root.join("current-regime.json");
+    let current_output = root.join("current-out");
+    let current_decision_ms = 1_300 + (30 * 3_600_000);
+    let current_window_end_ms = current_decision_ms + 3_600_000;
+    write_json(
+        &current_input,
+        &Value::Array(vec![bundle_json_with_gate_inputs(999, current_decision_ms)]),
+    );
+    write_json(
+        &current_delta,
+        &Value::Array(vec![market_delta_json(
+            "current_delta_999",
+            current_decision_ms,
+            current_window_end_ms,
+            0.5,
+        )]),
+    );
+    write_json(
+        &current_regime,
+        &Value::Array(vec![market_regime_json(
+            "current_regime_999",
+            current_decision_ms,
+            current_window_end_ms,
+        )]),
+    );
+
+    let summary = run(Args {
+        input_manifest_file: None,
+        input_manifest_s3_bucket: None,
+        input_manifest_s3_key: None,
+        input_bundle_file: Some(current_input),
+        input_bundle_s3_bucket: None,
+        input_bundle_s3_key: None,
+        market_feature_delta_file: Some(current_delta),
+        market_regime_context_file: Some(current_regime),
+        market_l1_s3_bucket: None,
+        market_feature_delta_s3_keys: Vec::new(),
+        market_regime_context_s3_keys: Vec::new(),
+        historical_replay_run_files: Vec::new(),
+        historical_replay_run_index_files: vec![history_index_file],
+        oss_adapter_run_files: Vec::new(),
+        oss_adapter_run_s3_bucket: None,
+        oss_adapter_run_s3_keys: Vec::new(),
+        historical_replay_run_s3_bucket: None,
+        historical_replay_run_s3_keys: Vec::new(),
+        historical_replay_run_index_s3_bucket: None,
+        historical_replay_run_index_s3_keys: Vec::new(),
+        output_dir: Some(current_output),
+        output_s3_bucket: None,
+        output_s3_prefix: None,
+        research_packet_id: "packet_test".to_owned(),
+        run_scope: "test".to_owned(),
+        now_ms: Some(124_000_000),
+    })
+    .await
+    .expect("current run succeeds");
+
+    assert_eq!(summary.replay_runs_created, 1);
+    assert_eq!(summary.historical_replay_runs_loaded, 30);
+    assert_eq!(summary.shadow_validation_runs_created, 1);
+    let report: Value =
+        serde_json::from_str(&fs::read_to_string(&summary.output_files[0]).expect("report exists"))
+            .expect("report json parses");
+    let aggregate = &report["partition_aggregates"][0];
+    assert_eq!(aggregate["gate_bias"], json!("PROMOTE_TO_SHADOW_BIAS"));
+    assert_eq!(aggregate["replay_run_count"], json!(31));
+    assert_eq!(aggregate["active_replay_run_count"], json!(31));
+    assert_eq!(aggregate["expired_replay_run_count"], json!(0));
+    assert_eq!(aggregate["completed_count"], json!(31));
+    assert_eq!(aggregate["expired_completed_count"], json!(0));
+    assert_eq!(aggregate["effective_completed_sample_weight"], json!(31.0));
+    assert_eq!(aggregate["weighted_mean_net_after_cost_bps"], json!(33.0));
+    assert_eq!(
+        aggregate["gate_reason_codes"],
+        json!(["deterministic_shadow_gate_passed"])
+    );
+    assert_eq!(
+        report["summary_findings"][0]["bias"],
+        json!("PROMOTE_TO_SHADOW_BIAS")
+    );
+    assert_eq!(
+        report["shadow_validation_runs"]
+            .as_array()
+            .expect("shadow runs are present")
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn expired_historical_replay_runs_are_excluded_from_promotion_gate() {
+    let root = test_root("expired-history");
+    let history_input = root.join("history-bundles.json");
+    let history_delta = root.join("history-delta.json");
+    let history_regime = root.join("history-regime.json");
+    let history_output = root.join("history-out");
+    let mut history_bundles = Vec::new();
+    let mut history_deltas = Vec::new();
+    let mut history_regimes = Vec::new();
+
+    for index in 0..30 {
+        let decision_ms = 1_300 + (index as i64 * 3_600_000);
+        let window_end_ms = decision_ms + 3_600_000;
+        history_bundles.push(bundle_json_with_gate_inputs(index, decision_ms));
+        history_deltas.push(market_delta_json(
+            &format!("history_delta_{index:03}"),
+            decision_ms,
+            window_end_ms,
+            0.5,
+        ));
+        history_regimes.push(market_regime_json(
+            &format!("history_regime_{index:03}"),
+            decision_ms,
+            window_end_ms,
+        ));
+    }
+
+    write_json(&history_input, &Value::Array(history_bundles));
+    write_json(&history_delta, &Value::Array(history_deltas));
+    write_json(&history_regime, &Value::Array(history_regimes));
+
+    let history_summary = run(Args {
+        input_manifest_file: None,
+        input_manifest_s3_bucket: None,
+        input_manifest_s3_key: None,
+        input_bundle_file: Some(history_input),
+        input_bundle_s3_bucket: None,
+        input_bundle_s3_key: None,
+        market_feature_delta_file: Some(history_delta),
+        market_regime_context_file: Some(history_regime),
+        market_l1_s3_bucket: None,
+        market_feature_delta_s3_keys: Vec::new(),
+        market_regime_context_s3_keys: Vec::new(),
+        historical_replay_run_files: Vec::new(),
+        historical_replay_run_index_files: Vec::new(),
+        oss_adapter_run_files: Vec::new(),
+        oss_adapter_run_s3_bucket: None,
+        oss_adapter_run_s3_keys: Vec::new(),
+        historical_replay_run_s3_bucket: None,
+        historical_replay_run_s3_keys: Vec::new(),
+        historical_replay_run_index_s3_bucket: None,
+        historical_replay_run_index_s3_keys: Vec::new(),
+        output_dir: Some(history_output),
+        output_s3_bucket: None,
+        output_s3_prefix: None,
+        research_packet_id: "packet_test".to_owned(),
+        run_scope: "test".to_owned(),
+        now_ms: Some(120_000_000),
+    })
+    .await
+    .expect("history run succeeds");
+    let history_replay_file = output_file_containing(&history_summary, "/replay-run/");
+
+    let current_input = root.join("current-bundles.json");
+    let current_delta = root.join("current-delta.json");
+    let current_regime = root.join("current-regime.json");
+    let current_output = root.join("current-out");
+    let current_decision_ms = (100 * DAY_MS) + 1_300;
+    let current_window_end_ms = current_decision_ms + 3_600_000;
+    write_json(
+        &current_input,
+        &Value::Array(vec![bundle_json_with_gate_inputs(999, current_decision_ms)]),
+    );
+    write_json(
+        &current_delta,
+        &Value::Array(vec![market_delta_json(
+            "current_delta_999",
+            current_decision_ms,
+            current_window_end_ms,
+            0.5,
+        )]),
+    );
+    write_json(
+        &current_regime,
+        &Value::Array(vec![market_regime_json(
+            "current_regime_999",
+            current_decision_ms,
+            current_window_end_ms,
+        )]),
+    );
+
+    let summary = run(Args {
+        input_manifest_file: None,
+        input_manifest_s3_bucket: None,
+        input_manifest_s3_key: None,
+        input_bundle_file: Some(current_input),
+        input_bundle_s3_bucket: None,
+        input_bundle_s3_key: None,
+        market_feature_delta_file: Some(current_delta),
+        market_regime_context_file: Some(current_regime),
+        market_l1_s3_bucket: None,
+        market_feature_delta_s3_keys: Vec::new(),
+        market_regime_context_s3_keys: Vec::new(),
+        historical_replay_run_files: vec![history_replay_file],
+        historical_replay_run_index_files: Vec::new(),
+        oss_adapter_run_files: Vec::new(),
+        oss_adapter_run_s3_bucket: None,
+        oss_adapter_run_s3_keys: Vec::new(),
+        historical_replay_run_s3_bucket: None,
+        historical_replay_run_s3_keys: Vec::new(),
+        historical_replay_run_index_s3_bucket: None,
+        historical_replay_run_index_s3_keys: Vec::new(),
+        output_dir: Some(current_output),
+        output_s3_bucket: None,
+        output_s3_prefix: None,
+        research_packet_id: "packet_test".to_owned(),
+        run_scope: "test".to_owned(),
+        now_ms: Some(current_window_end_ms + 100_000),
+    })
+    .await
+    .expect("current run succeeds");
+
+    assert_eq!(summary.replay_runs_created, 1);
+    assert_eq!(summary.historical_replay_runs_loaded, 30);
+    assert_eq!(summary.shadow_validation_runs_created, 0);
+    let report: Value =
+        serde_json::from_str(&fs::read_to_string(&summary.output_files[0]).expect("report exists"))
+            .expect("report json parses");
+    let aggregate = &report["partition_aggregates"][0];
+    assert_eq!(aggregate["gate_bias"], json!("RETEST_BIAS"));
+    assert_eq!(aggregate["replay_run_count"], json!(31));
+    assert_eq!(aggregate["active_replay_run_count"], json!(1));
+    assert_eq!(aggregate["expired_replay_run_count"], json!(30));
+    assert_eq!(aggregate["completed_count"], json!(1));
+    assert_eq!(aggregate["expired_completed_count"], json!(30));
+    assert_eq!(aggregate["effective_completed_sample_weight"], json!(1.0));
+    assert_eq!(aggregate["inferred_unseen_window_count"], json!(0));
+    let gate_reasons = aggregate["gate_reason_codes"]
+        .as_array()
+        .expect("gate reasons are an array");
+    assert!(gate_reasons.contains(&json!("promotion_sample_count_below_minimum")));
+    assert!(gate_reasons.contains(&json!("promotion_effective_sample_weight_below_minimum")));
+    assert_eq!(report["summary_findings"][0]["bias"], json!("RETEST_BIAS"));
+    assert_eq!(report["shadow_validation_runs"], json!([]));
+}
+
+#[tokio::test]
+async fn lookahead_mismatch_is_invalid_input() {
+    let root = test_root("lookahead");
+    let input = root.join("bundles.jsonl");
+    let output = root.join("out");
+    let mut bundle = bundle_json();
+    bundle["forbidden_lookahead_boundary_ms"] = json!(1_299);
+    write_json(&input, &bundle);
+
+    let summary = run(Args {
+        input_manifest_file: None,
+        input_manifest_s3_bucket: None,
+        input_manifest_s3_key: None,
+        input_bundle_file: Some(input),
+        input_bundle_s3_bucket: None,
+        input_bundle_s3_key: None,
+        market_feature_delta_file: None,
+        market_regime_context_file: None,
+        market_l1_s3_bucket: None,
+        market_feature_delta_s3_keys: Vec::new(),
+        market_regime_context_s3_keys: Vec::new(),
+        historical_replay_run_files: Vec::new(),
+        historical_replay_run_index_files: Vec::new(),
+        oss_adapter_run_files: Vec::new(),
+        oss_adapter_run_s3_bucket: None,
+        oss_adapter_run_s3_keys: Vec::new(),
+        historical_replay_run_s3_bucket: None,
+        historical_replay_run_s3_keys: Vec::new(),
+        historical_replay_run_index_s3_bucket: None,
+        historical_replay_run_index_s3_keys: Vec::new(),
+        output_dir: Some(output),
+        output_s3_bucket: None,
+        output_s3_prefix: None,
+        research_packet_id: "packet_test".to_owned(),
+        run_scope: "test".to_owned(),
+        now_ms: Some(1_800_000),
+    })
+    .await
+    .expect("run succeeds with partial report");
+
+    let report_text = fs::read_to_string(&summary.output_files[0]).expect("report exists");
+    assert!(report_text.contains("invalid_input"));
+    assert!(report_text.contains("lookahead_boundary_mismatch"));
+}
+
+#[tokio::test]
+async fn report_id_and_output_key_are_stable_without_now_ms() {
+    let root = test_root("stable-report");
+    let input = root.join("bundles.jsonl");
+    let output_a = root.join("out-a");
+    let output_b = root.join("out-b");
+    write_json(&input, &bundle_json());
+
+    let args = |output_dir: PathBuf| Args {
+        input_manifest_file: None,
+        input_manifest_s3_bucket: None,
+        input_manifest_s3_key: None,
+        input_bundle_file: Some(input.clone()),
+        input_bundle_s3_bucket: None,
+        input_bundle_s3_key: None,
+        market_feature_delta_file: None,
+        market_regime_context_file: None,
+        market_l1_s3_bucket: None,
+        market_feature_delta_s3_keys: Vec::new(),
+        market_regime_context_s3_keys: Vec::new(),
+        historical_replay_run_files: Vec::new(),
+        historical_replay_run_index_files: Vec::new(),
+        oss_adapter_run_files: Vec::new(),
+        oss_adapter_run_s3_bucket: None,
+        oss_adapter_run_s3_keys: Vec::new(),
+        historical_replay_run_s3_bucket: None,
+        historical_replay_run_s3_keys: Vec::new(),
+        historical_replay_run_index_s3_bucket: None,
+        historical_replay_run_index_s3_keys: Vec::new(),
+        output_dir: Some(output_dir),
+        output_s3_bucket: None,
+        output_s3_prefix: None,
+        research_packet_id: "packet_test".to_owned(),
+        run_scope: "test".to_owned(),
+        now_ms: None,
+    };
+
+    let summary_a = run(args(output_a.clone()))
+        .await
+        .expect("first run succeeds");
+    let summary_b = run(args(output_b.clone()))
+        .await
+        .expect("second run succeeds");
+    let report_a: Value = serde_json::from_str(
+        &fs::read_to_string(&summary_a.output_files[0]).expect("first report exists"),
+    )
+    .expect("first report json parses");
+    let report_b: Value = serde_json::from_str(
+        &fs::read_to_string(&summary_b.output_files[0]).expect("second report exists"),
+    )
+    .expect("second report json parses");
+
+    assert_eq!(
+        report_a["research_run_report_id"],
+        report_b["research_run_report_id"]
+    );
+    assert_eq!(report_a["created_at_ms"], json!(7_200_000));
+    assert_eq!(report_b["created_at_ms"], json!(7_200_000));
+    let relative_a = Path::new(&summary_a.output_files[0])
+        .strip_prefix(&output_a)
+        .expect("first output is under output dir");
+    let relative_b = Path::new(&summary_b.output_files[0])
+        .strip_prefix(&output_b)
+        .expect("second output is under output dir");
+    assert_eq!(relative_a, relative_b);
+}
+
+#[test]
+fn output_partition_uses_execution_time_without_rewriting_report_time() {
+    let root = test_root("output-partition-time");
+    let bundles = vec![
+        serde_json::from_value(bundle_json()).expect("candidate bundle test json matches model"),
+    ];
+    let report = crate::report::build_report("packet_test", "test", 7_200_000, &bundles, &[], &[]);
+
+    let written =
+        crate::io::write_research_outputs(&root, &report, &[], &[], 3_600_000).expect("write ok");
+
+    let relative = written[0]
+        .strip_prefix(&root)
+        .expect("output is under test root")
+        .display()
+        .to_string();
+    assert!(
+        relative.contains("dt=1970-01-01/hour=01"),
+        "output partition should use execution time, got {relative}"
+    );
+    let report_json: Value =
+        serde_json::from_str(&fs::read_to_string(&written[0]).expect("report exists"))
+            .expect("report json parses");
+    assert_eq!(report_json["created_at_ms"], json!(7_200_000));
+}
+
+#[tokio::test]
+async fn manifest_batch_input_processes_multiple_candidate_refs() {
+    let root = test_root("manifest-batch");
+    let bundle_a = root.join("bundle-a.json");
+    let bundle_b = root.join("bundle-b.json");
+    let delta = root.join("delta.json");
+    let regime = root.join("regime.json");
+    let manifest = root.join("manifest.json");
+    let output = root.join("out");
+
+    write_json(&bundle_a, &bundle_json_with_gate_inputs(1, 1_300));
+    write_json(&bundle_b, &bundle_json_with_gate_inputs(2, 3_601_300));
+    write_json(
+        &delta,
+        &json!([
+            market_delta_json("delta_001", 1_300, 3_601_300, 0.021),
+            market_delta_json("delta_002", 3_601_300, 7_201_300, -0.004)
+        ]),
+    );
+    write_json(
+        &regime,
+        &json!([
+            market_regime_json("regime_001", 1_300, 3_601_300),
+            market_regime_json("regime_002", 3_601_300, 7_201_300)
+        ]),
+    );
+    write_json(
+        &manifest,
+        &json!({
+            "schema_version": "research_input_manifest_v1",
+            "research_packet_id": "manifest_packet",
+            "run_scope": "manifest_batch",
+            "candidate_bundle_refs": [
+                { "uri": bundle_a.display().to_string() },
+                { "uri": bundle_b.display().to_string() }
+            ],
+            "market_feature_delta_refs": [
+                { "uri": delta.display().to_string() }
+            ],
+            "market_regime_context_refs": [
+                { "uri": regime.display().to_string() }
+            ],
+            "runtime_budget_policy": {
+                "max_candidate_bundle_count": 10,
+                "max_market_artifact_ref_count": 10,
+                "max_historical_replay_run_ref_count": 10,
+                "max_replay_run_count": 20
+            }
+        }),
+    );
+
+    let summary = run(Args {
+        input_manifest_file: Some(manifest),
+        input_manifest_s3_bucket: None,
+        input_manifest_s3_key: None,
+        input_bundle_file: None,
+        input_bundle_s3_bucket: None,
+        input_bundle_s3_key: None,
+        market_feature_delta_file: None,
+        market_regime_context_file: None,
+        market_l1_s3_bucket: None,
+        market_feature_delta_s3_keys: Vec::new(),
+        market_regime_context_s3_keys: Vec::new(),
+        historical_replay_run_files: Vec::new(),
+        historical_replay_run_index_files: Vec::new(),
+        oss_adapter_run_files: Vec::new(),
+        oss_adapter_run_s3_bucket: None,
+        oss_adapter_run_s3_keys: Vec::new(),
+        historical_replay_run_s3_bucket: None,
+        historical_replay_run_s3_keys: Vec::new(),
+        historical_replay_run_index_s3_bucket: None,
+        historical_replay_run_index_s3_keys: Vec::new(),
+        output_dir: Some(output),
+        output_s3_bucket: None,
+        output_s3_prefix: None,
+        research_packet_id: "cli_packet".to_owned(),
+        run_scope: "cli_scope".to_owned(),
+        now_ms: Some(7_300_000),
+    })
+    .await
+    .expect("manifest batch run succeeds");
+
+    assert_eq!(summary.processed_bundles, 2);
+    assert_eq!(summary.replay_runs_created, 2);
+    assert!(
+        summary
+            .output_files
+            .iter()
+            .any(|path| path.contains("replay-run-index"))
+    );
+    let report: Value =
+        serde_json::from_str(&fs::read_to_string(&summary.output_files[0]).expect("report exists"))
+            .expect("report json parses");
+    assert_eq!(report["research_packet_id"], json!("manifest_packet"));
+    assert_eq!(report["run_scope"], json!("manifest_batch"));
+    assert_eq!(
+        report["source_candidate_ids"],
+        json!(["cand_001", "cand_002"])
+    );
+}
+
+#[tokio::test]
+async fn manifest_runtime_budget_blocks_oversized_batch() {
+    let root = test_root("manifest-budget");
+    let bundle_a = root.join("bundle-a.json");
+    let bundle_b = root.join("bundle-b.json");
+    let manifest = root.join("manifest.json");
+
+    write_json(&bundle_a, &bundle_json_with_gate_inputs(1, 1_300));
+    write_json(&bundle_b, &bundle_json_with_gate_inputs(2, 3_601_300));
+    write_json(
+        &manifest,
+        &json!({
+            "schema_version": "research_input_manifest_v1",
+            "candidate_bundle_refs": [
+                { "uri": bundle_a.display().to_string() },
+                { "uri": bundle_b.display().to_string() }
+            ],
+            "runtime_budget_policy": {
+                "max_candidate_bundle_count": 1,
+                "max_market_artifact_ref_count": 10,
+                "max_historical_replay_run_ref_count": 10,
+                "max_replay_run_count": 20
+            }
+        }),
+    );
+
+    let error = run(Args {
+        input_manifest_file: Some(manifest),
+        input_manifest_s3_bucket: None,
+        input_manifest_s3_key: None,
+        input_bundle_file: None,
+        input_bundle_s3_bucket: None,
+        input_bundle_s3_key: None,
+        market_feature_delta_file: None,
+        market_regime_context_file: None,
+        market_l1_s3_bucket: None,
+        market_feature_delta_s3_keys: Vec::new(),
+        market_regime_context_s3_keys: Vec::new(),
+        historical_replay_run_files: Vec::new(),
+        historical_replay_run_index_files: Vec::new(),
+        oss_adapter_run_files: Vec::new(),
+        oss_adapter_run_s3_bucket: None,
+        oss_adapter_run_s3_keys: Vec::new(),
+        historical_replay_run_s3_bucket: None,
+        historical_replay_run_s3_keys: Vec::new(),
+        historical_replay_run_index_s3_bucket: None,
+        historical_replay_run_index_s3_keys: Vec::new(),
+        output_dir: Some(root.join("out")),
+        output_s3_bucket: None,
+        output_s3_prefix: None,
+        research_packet_id: "packet_test".to_owned(),
+        run_scope: "test".to_owned(),
+        now_ms: Some(7_300_000),
+    })
+    .await
+    .expect_err("oversized manifest is rejected");
+
+    assert!(error.to_string().contains("runtime budget exceeded"));
+}
+
+#[test]
+fn derives_market_l1_s3_keys_from_candidate_bundle() {
+    let mut bundle = bundle_json();
+    bundle["data_quality_summary"]["market_data_quality_summary_key"] =
+        json!("market_data_quality_summary/run_id=l1_001/summary.json");
+    bundle["selected_market_artifacts"] = json!([
+        {
+            "artifact_type": "market_feature_delta_summary",
+            "artifact_id": "delta_summary_001",
+            "artifact_key": "market_feature_delta_summary/run_id=l1_selected/summary.json",
+            "l1_run_id": "l1_selected",
+            "symbol_canonical": "SUI",
+            "metric_name": "price",
+            "window_start_ms": 1_000,
+            "window_end_ms": 1_300,
+            "known_as_of_ms": 1_300,
+            "quality_status": "available"
+        },
+        {
+            "artifact_type": "market_regime_context",
+            "artifact_id": "regime_001",
+            "artifact_key": "s3://nangman-crypto-dev-market-ingest-l1-<account-suffix>/market_regime_context/run_id=l1_selected/context.json",
+            "l1_run_id": "l1_selected",
+            "scope": "market",
+            "window_start_ms": 1_000,
+            "window_end_ms": 1_300,
+            "known_as_of_ms": 1_300,
+            "quality_status": "available"
+        }
+    ]);
+    let bundles =
+        vec![serde_json::from_value(bundle).expect("candidate bundle test json matches model")];
+    let args = Args {
+        input_manifest_file: None,
+        input_manifest_s3_bucket: None,
+        input_manifest_s3_key: None,
+        input_bundle_file: None,
+        input_bundle_s3_bucket: Some(
+            "nangman-crypto-dev-intel-candidate-<account-suffix>".to_owned(),
+        ),
+        input_bundle_s3_key: Some(
+            "candidate-evidence-bundle/priority=p0/part-000001.jsonl".to_owned(),
+        ),
+        market_feature_delta_file: None,
+        market_regime_context_file: None,
+        market_l1_s3_bucket: None,
+        market_feature_delta_s3_keys: vec![
+            "market_feature_delta/run_id=l1_cli/delta.json".to_owned(),
+        ],
+        market_regime_context_s3_keys: Vec::new(),
+        historical_replay_run_files: Vec::new(),
+        historical_replay_run_index_files: Vec::new(),
+        oss_adapter_run_files: Vec::new(),
+        oss_adapter_run_s3_bucket: None,
+        oss_adapter_run_s3_keys: Vec::new(),
+        historical_replay_run_s3_bucket: None,
+        historical_replay_run_s3_keys: Vec::new(),
+        historical_replay_run_index_s3_bucket: None,
+        historical_replay_run_index_s3_keys: Vec::new(),
+        output_dir: None,
+        output_s3_bucket: None,
+        output_s3_prefix: None,
+        research_packet_id: "packet_test".to_owned(),
+        run_scope: "test".to_owned(),
+        now_ms: None,
+    };
+
+    assert_eq!(
+        market_feature_delta_s3_keys(&args, &bundles),
+        vec![
+            "market_feature_delta/run_id=l1_001/delta.json",
+            "market_feature_delta/run_id=l1_cli/delta.json",
+            "market_feature_delta/run_id=l1_selected/delta.json",
+        ]
+    );
+    assert_eq!(
+        market_regime_context_s3_keys(&args, &bundles),
+        vec![
+            "market_regime_context/run_id=l1_001/context.json",
+            "market_regime_context/run_id=l1_selected/context.json",
+        ]
+    );
+}
