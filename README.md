@@ -98,11 +98,45 @@ RESEARCH_OUTPUT_S3_PREFIX optional, default empty
 ECS placement:
 
 ```text
-cluster = ecs-nangman-dev-intel-apn2
+cluster = ecs-nangman-dev-invest-apn2
 task definition = td-nangman-dev-research-apn2
 capacity provider = FARGATE_SPOT only
 log group = /aws/ecs/log-nangman-dev-research-apn2
 ```
+
+## Activation Readiness
+
+Before switching the S3 dispatcher from `dry_run` to `run_task`, run the
+readiness check. It does not write research reports, does not switch the
+dispatcher mode, and refuses to invoke the dispatcher unless the Lambda is still
+in `dry_run`.
+
+```bash
+cd /Volumes/WD/Developments/nangman-crypto/apps/research-app
+
+AWS_PROFILE=<sso-profile> \
+AWS_REGION=ap-northeast-2 \
+RESEARCH_DRY_RUN_BUCKET=nangman-crypto-dev-intel-candidate-<account-suffix> \
+RESEARCH_DRY_RUN_KEY=candidate-evidence-bundle/priority=p2/schema=intel_candidate_evidence_bundle_v1/dt=YYYY-MM-DD/hour=HH/candidate_id=<candidate-id>/part-000001.jsonl \
+scripts/check-activation-readiness.sh
+```
+
+The check verifies:
+
+```text
+- dispatcher Lambda is Active and update status is Successful
+- RESEARCH_DISPATCH_MODE is dry_run
+- dispatcher points at td-nangman-dev-research-apn2 and research-app
+- latest task definition is ACTIVE, ARM64, Linux, readonly root filesystem
+- task definition has RESEARCH_OUTPUT_S3_BUCKET and RESEARCH_MARKET_L1_S3_BUCKET
+- optional dry-run S3 event matches the dispatcher filter without starting ECS
+- no RUNNING/PENDING ECS task exists with startedBy=research-s3-dispatcher
+- latest research output prefixes are visible before activation
+```
+
+Only after this passes and research output upload is explicitly approved should
+operators switch `RESEARCH_DISPATCH_MODE=run_task` or run an output-enabled
+one-shot ECS task.
 
 ## V0 Boundaries
 
