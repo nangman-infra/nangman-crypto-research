@@ -1,4 +1,4 @@
-use crate::admission::validate_bundle_admission;
+use crate::admission::{horizon_ms, validate_bundle_admission};
 use crate::error::{AppError, AppResult};
 use crate::io::{
     ResearchOutputArtifacts, read_candidate_bundles, read_market_feature_deltas,
@@ -16,9 +16,10 @@ use crate::paper::build_paper_artifacts;
 use crate::replay::{build_invalid_replay_run, run_native_replay};
 use crate::report::build_report;
 use crate::storage::{
-    read_candidate_bundles_from_s3, read_market_feature_deltas_from_s3,
-    read_market_regime_contexts_from_s3, read_oss_adapter_runs_from_s3,
-    read_replay_run_index_records_from_s3, read_replay_runs_from_s3,
+    discover_latest_market_feature_delta_keys_from_s3,
+    discover_latest_market_regime_context_keys_from_s3, read_candidate_bundles_from_s3,
+    read_market_feature_deltas_from_s3, read_market_regime_contexts_from_s3,
+    read_oss_adapter_runs_from_s3, read_replay_run_index_records_from_s3, read_replay_runs_from_s3,
     read_research_input_manifest_from_s3, read_shadow_validation_runs_from_s3,
     write_research_outputs_to_s3,
 };
@@ -32,6 +33,7 @@ const DEFAULT_MARKET_L1_S3_BUCKET: &str = "nangman-crypto-dev-market-ingest-l1-<
 const MARKET_FEATURE_DELTA_ARTIFACT_TYPE: &str = "market_feature_delta";
 const MARKET_FEATURE_DELTA_SUMMARY_ARTIFACT_TYPE: &str = "market_feature_delta_summary";
 const MARKET_REGIME_CONTEXT_ARTIFACT_TYPE: &str = "market_regime_context";
+const MARKET_L1_REPLAY_WINDOW_MS: i64 = 15 * 60 * 1000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Args {
@@ -402,8 +404,20 @@ pub async fn run(args: Args) -> AppResult<RunSummary> {
         bundles.len(),
         budget.max_candidate_bundle_count,
     )?;
-    let market_deltas = load_market_deltas(&args, &bundles, manifest.as_ref()).await?;
-    let regime_contexts = load_regime_contexts(&args, &bundles, manifest.as_ref()).await?;
+    let market_deltas = load_market_deltas(
+        &args,
+        &bundles,
+        manifest.as_ref(),
+        budget.max_market_artifact_ref_count,
+    )
+    .await?;
+    let regime_contexts = load_regime_contexts(
+        &args,
+        &bundles,
+        manifest.as_ref(),
+        budget.max_market_artifact_ref_count,
+    )
+    .await?;
     let historical_replay_runs = load_historical_replay_runs(&args, manifest.as_ref()).await?;
     let oss_adapter_runs = load_oss_adapter_runs(&args, manifest.as_ref()).await?;
     let completed_shadow_validation_runs =
@@ -676,6 +690,7 @@ async fn load_market_deltas(
     args: &Args,
     bundles: &[IntelCandidateEvidenceBundle],
     manifest: Option<&ResearchInputManifest>,
+    max_market_artifact_ref_count: usize,
 ) -> AppResult<Vec<MarketFeatureDelta>> {
     let mut deltas = Vec::new();
     if let Some(path) = args.market_feature_delta_file.as_deref() {
@@ -689,7 +704,12 @@ async fn load_market_deltas(
     if !should_read_market_s3(args) {
         return Ok(deltas);
     }
-    let keys = market_feature_delta_s3_keys(args, bundles);
+    let keys = market_feature_delta_s3_keys(args, bundles).await?;
+    enforce_budget(
+        "market_feature_delta_s3_key_count",
+        keys.len(),
+        max_market_artifact_ref_count,
+    )?;
     if keys.is_empty() {
         return Ok(deltas);
     }
@@ -701,6 +721,7 @@ async fn load_regime_contexts(
     args: &Args,
     bundles: &[IntelCandidateEvidenceBundle],
     manifest: Option<&ResearchInputManifest>,
+    max_market_artifact_ref_count: usize,
 ) -> AppResult<Vec<MarketRegimeContext>> {
     let mut contexts = Vec::new();
     if let Some(path) = args.market_regime_context_file.as_deref() {
@@ -714,7 +735,12 @@ async fn load_regime_contexts(
     if !should_read_market_s3(args) {
         return Ok(contexts);
     }
-    let keys = market_regime_context_s3_keys(args, bundles);
+    let keys = market_regime_context_s3_keys(args, bundles).await?;
+    enforce_budget(
+        "market_regime_context_s3_key_count",
+        keys.len(),
+        max_market_artifact_ref_count,
+    )?;
     if keys.is_empty() {
         return Ok(contexts);
     }
@@ -1138,10 +1164,10 @@ fn market_l1_s3_bucket(args: &Args) -> &str {
         .unwrap_or(DEFAULT_MARKET_L1_S3_BUCKET)
 }
 
-fn market_feature_delta_s3_keys(
+async fn market_feature_delta_s3_keys(
     args: &Args,
     bundles: &[IntelCandidateEvidenceBundle],
-) -> Vec<String> {
+) -> AppResult<Vec<String>> {
     let mut keys = BTreeSet::new();
     for key in &args.market_feature_delta_s3_keys {
         insert_normalized_s3_key(&mut keys, key);
@@ -1172,13 +1198,21 @@ fn market_feature_delta_s3_keys(
             keys.insert(format!("market_feature_delta/run_id={run_id}/delta.json"));
         }
     }
-    keys.into_iter().collect()
+    for key in discover_latest_market_feature_delta_keys_from_s3(
+        market_l1_s3_bucket(args),
+        &market_l1_replay_window_starts(bundles, args.now_ms.unwrap_or_else(now_ms)),
+    )
+    .await?
+    {
+        insert_normalized_s3_key(&mut keys, &key);
+    }
+    Ok(keys.into_iter().collect())
 }
 
-fn market_regime_context_s3_keys(
+async fn market_regime_context_s3_keys(
     args: &Args,
     bundles: &[IntelCandidateEvidenceBundle],
-) -> Vec<String> {
+) -> AppResult<Vec<String>> {
     let mut keys = BTreeSet::new();
     for key in &args.market_regime_context_s3_keys {
         insert_normalized_s3_key(&mut keys, key);
@@ -1202,7 +1236,15 @@ fn market_regime_context_s3_keys(
             ));
         }
     }
-    keys.into_iter().collect()
+    for key in discover_latest_market_regime_context_keys_from_s3(
+        market_l1_s3_bucket(args),
+        &market_l1_replay_window_starts(bundles, args.now_ms.unwrap_or_else(now_ms)),
+    )
+    .await?
+    {
+        insert_normalized_s3_key(&mut keys, &key);
+    }
+    Ok(keys.into_iter().collect())
 }
 
 fn insert_normalized_s3_key(keys: &mut BTreeSet<String>, value: &str) {
@@ -1232,6 +1274,42 @@ fn market_l1_run_id_from_key(value: &str) -> Option<String> {
     let end = remainder.find('/').unwrap_or(remainder.len());
     let run_id = remainder[..end].trim();
     (!run_id.is_empty()).then(|| run_id.to_owned())
+}
+
+fn market_l1_replay_window_starts(
+    bundles: &[IntelCandidateEvidenceBundle],
+    discovery_cutoff_ms: i64,
+) -> Vec<i64> {
+    let mut starts = BTreeSet::new();
+    for bundle in bundles {
+        if !validate_bundle_admission(bundle).admitted {
+            continue;
+        }
+        let Some(max_horizon_ms) = bundle
+            .allowed_horizons
+            .iter()
+            .filter_map(|horizon| horizon_ms(horizon))
+            .max()
+        else {
+            continue;
+        };
+        let replay_start_ms = bundle.forbidden_lookahead_boundary_ms;
+        let replay_end_ms = (replay_start_ms + max_horizon_ms).min(discovery_cutoff_ms);
+        if replay_end_ms < replay_start_ms {
+            continue;
+        }
+        let mut window_start_ms = align_market_l1_window_start(replay_start_ms);
+        let last_window_start_ms = align_market_l1_window_start(replay_end_ms);
+        while window_start_ms <= last_window_start_ms {
+            starts.insert(window_start_ms);
+            window_start_ms += MARKET_L1_REPLAY_WINDOW_MS;
+        }
+    }
+    starts.into_iter().collect()
+}
+
+fn align_market_l1_window_start(timestamp_ms: i64) -> i64 {
+    timestamp_ms.div_euclid(MARKET_L1_REPLAY_WINDOW_MS) * MARKET_L1_REPLAY_WINDOW_MS
 }
 
 fn deterministic_report_created_at_ms(bundles: &[IntelCandidateEvidenceBundle]) -> i64 {

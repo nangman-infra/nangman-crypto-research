@@ -57,6 +57,19 @@ pub async fn read_market_feature_deltas_from_s3(
     Ok(deltas)
 }
 
+pub async fn discover_latest_market_feature_delta_keys_from_s3(
+    bucket: &str,
+    window_starts_ms: &[i64],
+) -> AppResult<Vec<String>> {
+    discover_latest_market_l1_keys_from_s3(
+        bucket,
+        window_starts_ms,
+        "market_feature_delta",
+        "/delta.json",
+    )
+    .await
+}
+
 pub async fn read_market_regime_contexts_from_s3(
     bucket: &str,
     keys: &[String],
@@ -75,6 +88,19 @@ pub async fn read_market_regime_contexts_from_s3(
         )?);
     }
     Ok(contexts)
+}
+
+pub async fn discover_latest_market_regime_context_keys_from_s3(
+    bucket: &str,
+    window_starts_ms: &[i64],
+) -> AppResult<Vec<String>> {
+    discover_latest_market_l1_keys_from_s3(
+        bucket,
+        window_starts_ms,
+        "market_regime_context",
+        "/context.json",
+    )
+    .await
 }
 
 pub async fn read_replay_runs_from_s3(bucket: &str, keys: &[String]) -> AppResult<Vec<ReplayRun>> {
@@ -350,6 +376,76 @@ pub async fn write_research_outputs_to_s3(
     }
 
     Ok(written)
+}
+
+async fn discover_latest_market_l1_keys_from_s3(
+    bucket: &str,
+    window_starts_ms: &[i64],
+    family_prefix: &str,
+    file_suffix: &str,
+) -> AppResult<Vec<String>> {
+    if window_starts_ms.is_empty() {
+        return Ok(Vec::new());
+    }
+    if bucket.trim().is_empty() {
+        return Err(AppError::config("market L1 S3 bucket must not be empty"));
+    }
+    let client = s3_client().await;
+    let mut keys = Vec::new();
+    for window_start_ms in window_starts_ms {
+        let prefix = format!("{family_prefix}/run_id=l1_{window_start_ms}_");
+        if let Some(key) = latest_key_with_prefix(&client, bucket, &prefix, file_suffix).await? {
+            keys.push(key);
+        }
+    }
+    keys.sort();
+    keys.dedup();
+    Ok(keys)
+}
+
+async fn latest_key_with_prefix(
+    client: &Client,
+    bucket: &str,
+    prefix: &str,
+    file_suffix: &str,
+) -> AppResult<Option<String>> {
+    let mut latest: Option<String> = None;
+    let mut continuation_token: Option<String> = None;
+
+    loop {
+        let mut request = client.list_objects_v2().bucket(bucket).prefix(prefix);
+        if let Some(token) = continuation_token.as_deref() {
+            request = request.continuation_token(token);
+        }
+        let output = request.send().await.map_err(|error| {
+            AppError::Aws(format!(
+                "s3 list_objects_v2 s3://{bucket}/{prefix}: {}",
+                aws_error_detail(&error)
+            ))
+        })?;
+
+        for object in output.contents() {
+            let Some(key) = object.key() else {
+                continue;
+            };
+            if !key.ends_with(file_suffix) {
+                continue;
+            }
+            if latest
+                .as_deref()
+                .is_none_or(|current_latest| key > current_latest)
+            {
+                latest = Some(key.to_owned());
+            }
+        }
+
+        continuation_token = output.next_continuation_token().map(ToOwned::to_owned);
+        if continuation_token.is_none() {
+            break;
+        }
+    }
+
+    Ok(latest)
 }
 
 async fn get_object_bytes(client: &Client, bucket: &str, key: &str) -> AppResult<Vec<u8>> {

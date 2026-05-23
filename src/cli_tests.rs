@@ -1720,8 +1720,8 @@ async fn manifest_runtime_budget_blocks_oversized_batch() {
     assert!(error.to_string().contains("runtime budget exceeded"));
 }
 
-#[test]
-fn derives_market_l1_s3_keys_from_candidate_bundle() {
+#[tokio::test]
+async fn derives_market_l1_s3_keys_from_candidate_bundle() {
     let mut bundle = bundle_json();
     bundle["data_quality_summary"]["market_data_quality_summary_key"] =
         json!("market_data_quality_summary/run_id=l1_001/summary.json");
@@ -1787,11 +1787,13 @@ fn derives_market_l1_s3_keys_from_candidate_bundle() {
         output_s3_prefix: None,
         research_packet_id: "packet_test".to_owned(),
         run_scope: "test".to_owned(),
-        now_ms: None,
+        now_ms: Some(0),
     };
 
     assert_eq!(
-        market_feature_delta_s3_keys(&args, &bundles),
+        market_feature_delta_s3_keys(&args, &bundles)
+            .await
+            .expect("market feature delta keys derive"),
         vec![
             "market_feature_delta/run_id=l1_001/delta.json",
             "market_feature_delta/run_id=l1_cli/delta.json",
@@ -1799,10 +1801,25 @@ fn derives_market_l1_s3_keys_from_candidate_bundle() {
         ]
     );
     assert_eq!(
-        market_regime_context_s3_keys(&args, &bundles),
+        market_regime_context_s3_keys(&args, &bundles)
+            .await
+            .expect("market regime context keys derive"),
         vec![
             "market_regime_context/run_id=l1_001/context.json",
             "market_regime_context/run_id=l1_selected/context.json",
         ]
+    );
+}
+
+#[test]
+fn derives_market_l1_replay_window_starts_from_candidate_horizons() {
+    let mut bundle = bundle_json_with_gate_inputs(0, 1_300);
+    bundle["allowed_horizons"] = json!(["1h", "4h", "24h"]);
+    let bundles =
+        vec![serde_json::from_value(bundle).expect("candidate bundle test json matches model")];
+
+    assert_eq!(
+        market_l1_replay_window_starts(&bundles, 2_100_000),
+        vec![0, 900_000, 1_800_000]
     );
 }

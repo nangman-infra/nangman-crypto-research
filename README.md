@@ -72,6 +72,10 @@ Batch manifest input:
 In ECS, market replay inputs are loaded from Market-L1 S3. The app first uses
 `selected_market_artifacts[].artifact_key` from the candidate bundle, then falls
 back to the sibling keys derived from `market_data_quality_summary/run_id=...`.
+It also discovers later Market-L1 15-minute replay windows from the candidate's
+`forbidden_lookahead_boundary_ms` through the currently materialized horizon, so
+native replay can progress after new post-decision market data lands without
+manually wiring every delta/context key.
 
 ECS input/output environment:
 
