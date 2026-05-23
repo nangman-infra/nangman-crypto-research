@@ -247,6 +247,39 @@ The summary separates:
 - next research needs such as more native replay samples, unseen windows, or liquidity inputs
 ```
 
+## Retest Horizon Plan
+
+Use the retest horizon plan after a `current_approved` batch run to decide
+whether each candidate horizon is waiting for Market-L1 coverage, ready for
+another replay run, or blocked by sample accumulation. It fetches candidate
+bundles referenced by a local `research_input_manifest_v1`, reads the local
+report, and optionally discovers the latest Market-L1 universe as-of time. It
+does not upload reports, start ECS tasks, switch the dispatcher, or create
+shadow/paper artifacts.
+
+```bash
+cd /Volumes/WD/Developments/nangman-crypto/apps/research-app
+
+AWS_PROFILE=<sso-profile> \
+AWS_REGION=ap-northeast-2 \
+RESEARCH_MARKET_L1_S3_BUCKET=nangman-crypto-dev-market-ingest-l1-<account-suffix> \
+scripts/build-retest-horizon-plan.sh \
+  /tmp/nangman-crypto/research-input-manifest.json \
+  /tmp/nangman-crypto/research-output/research-run-report/schema=research_run_report_v1/dt=YYYY-MM-DD/hour=HH/research_run_report_id=<report-id>/report.json
+```
+
+The output separates:
+
+```text
+- wait_for_market_l1_horizon
+- run_research_replay_for_horizon
+- materialize_completed_native_replay_sample
+- accumulate_completed_native_replay_samples
+- materialize_unseen_replay_windows
+- materialize_train_validation_split
+- materialize_liquidity_filter_inputs
+```
+
 ## Post-Activation Runtime Check
 
 After an approved output-enabled run or dispatcher activation, verify the
