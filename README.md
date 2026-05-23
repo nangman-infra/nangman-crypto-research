@@ -86,6 +86,14 @@ local `research_input_manifest_v1`, and prints a local validation command. It
 does not upload the manifest, start ECS, switch the dispatcher, or create S3
 research/shadow/paper outputs.
 
+By default the builder uses `RESEARCH_BATCH_UNIVERSE_MODE=current_approved`,
+which means candidate bundles are selected only when their symbols are approved
+in the latest Market-L1 universe snapshot. This prevents older bundles whose
+embedded `approved_universe_symbol` was produced by an older universe policy
+from looking like current promotion-safe input. For diagnostic replay only, use
+`RESEARCH_BATCH_UNIVERSE_MODE=legacy_retest`; that mode must not be used as
+promotion evidence.
+
 In ECS, market replay inputs are loaded from Market-L1 S3. The app first uses
 `selected_market_artifacts[].artifact_key` from the candidate bundle, then falls
 back to the sibling keys derived from `market_data_quality_summary/run_id=...`.

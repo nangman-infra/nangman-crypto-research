@@ -11,7 +11,8 @@ MAX_CANDIDATE_BUNDLE_COUNT="${RESEARCH_BATCH_MAX_CANDIDATE_BUNDLE_COUNT:-50}"
 HISTORICAL_INDEX_READ_LIMIT="${RESEARCH_BATCH_HISTORICAL_INDEX_READ_LIMIT:-20}"
 MAX_HISTORICAL_REPLAY_RUN_REF_COUNT="${RESEARCH_BATCH_MAX_HISTORICAL_REPLAY_RUN_REF_COUNT:-10000}"
 MAX_REPLAY_RUN_COUNT="${RESEARCH_BATCH_MAX_REPLAY_RUN_COUNT:-20000}"
-RUN_SCOPE="${RESEARCH_BATCH_RUN_SCOPE:-recent_candidate_batch_local_validation}"
+UNIVERSE_MODE="${RESEARCH_BATCH_UNIVERSE_MODE:-current_approved}"
+RUN_SCOPE="${RESEARCH_BATCH_RUN_SCOPE:-recent_candidate_batch_${UNIVERSE_MODE}_local_validation}"
 RESEARCH_PACKET_ID="${RESEARCH_BATCH_PACKET_ID:-research_packet_$(date -u +%Y%m%dT%H%M%SZ)}"
 
 require_command() {
@@ -102,6 +103,53 @@ list_latest_objects() {
     '
 }
 
+latest_universe_snapshot_object_json() {
+  local bucket="$1"
+  local prefix="$2"
+  aws_cmd s3api list-objects-v2 \
+    --bucket "$bucket" \
+    --prefix "$prefix" \
+    --output json \
+  | jq -c --arg prefix "$prefix" '
+      def with_run_id_times:
+        . as $object
+        | ($object.Key | capture("run_id=l1_(?<start>[0-9]+)_(?<end>[0-9]+)_(?<generated>[0-9]+)")? // {}) as $run
+        | $object + {
+            run_start_ms:(($run.start // "0") | tonumber),
+            run_end_ms:(($run.end // "0") | tonumber),
+            run_generated_ms:(($run.generated // "0") | tonumber)
+          };
+
+      (.Contents // [])
+      | map(with_run_id_times)
+      | sort_by(.run_end_ms, .LastModified, .Key)
+      | last as $last
+      | if $last == null then
+          {
+            prefix:$prefix,
+            selection:"latest_universe_as_of",
+            lastModified:null,
+            size:null,
+            key:null,
+            run_start_ms:null,
+            run_end_ms:null,
+            run_generated_ms:null
+          }
+        else
+          {
+            prefix:$prefix,
+            selection:"latest_universe_as_of",
+            lastModified:$last.LastModified,
+            size:$last.Size,
+            key:$last.Key,
+            run_start_ms:$last.run_start_ms,
+            run_end_ms:$last.run_end_ms,
+            run_generated_ms:$last.run_generated_ms
+          }
+        end
+    '
+}
+
 require_command aws
 require_command jq
 require_command sed
@@ -113,6 +161,13 @@ positive_integer_arg "RESEARCH_BATCH_MAX_CANDIDATE_BUNDLE_COUNT" "$MAX_CANDIDATE
 positive_integer_arg "RESEARCH_BATCH_HISTORICAL_INDEX_READ_LIMIT" "$HISTORICAL_INDEX_READ_LIMIT"
 positive_integer_arg "RESEARCH_BATCH_MAX_HISTORICAL_REPLAY_RUN_REF_COUNT" "$MAX_HISTORICAL_REPLAY_RUN_REF_COUNT"
 positive_integer_arg "RESEARCH_BATCH_MAX_REPLAY_RUN_COUNT" "$MAX_REPLAY_RUN_COUNT"
+case "$UNIVERSE_MODE" in
+  current_approved | current_observed | legacy_retest) ;;
+  *)
+    echo "RESEARCH_BATCH_UNIVERSE_MODE must be current_approved, current_observed, or legacy_retest; got $UNIVERSE_MODE" >&2
+    exit 1
+    ;;
+esac
 
 if [[ -n "${RESEARCH_BATCH_MANIFEST_OUTPUT:-}" ]]; then
   MANIFEST_OUTPUT="$RESEARCH_BATCH_MANIFEST_OUTPUT"
@@ -132,6 +187,7 @@ echo "task_definition=$TASK_DEFINITION"
 echo "candidate_read_limit=$CANDIDATE_READ_LIMIT"
 echo "max_candidate_bundle_count=$MAX_CANDIDATE_BUNDLE_COUNT"
 echo "historical_index_read_limit=$HISTORICAL_INDEX_READ_LIMIT"
+echo "universe_mode=$UNIVERSE_MODE"
 echo
 
 verify_aws_access
@@ -145,7 +201,10 @@ candidate_objects_json="$(mktemp)"
 candidate_records_json="$(mktemp)"
 selected_candidates_json="$(mktemp)"
 historical_index_objects_json="$(mktemp)"
-trap 'rm -f "$lambda_json" "$task_json" "$candidate_p0_json" "$candidate_p1_json" "$candidate_p2_json" "$candidate_objects_json" "$candidate_records_json" "$selected_candidates_json" "$historical_index_objects_json"' EXIT
+universe_object_json="$(mktemp)"
+universe_summary_json="$(mktemp)"
+all_candidates_json="$(mktemp)"
+trap 'rm -f "$lambda_json" "$task_json" "$candidate_p0_json" "$candidate_p1_json" "$candidate_p2_json" "$candidate_objects_json" "$candidate_records_json" "$selected_candidates_json" "$historical_index_objects_json" "$universe_object_json" "$universe_summary_json" "$all_candidates_json"' EXIT
 
 aws_cmd lambda get-function-configuration \
   --function-name "$DISPATCHER_FUNCTION" \
@@ -181,6 +240,64 @@ fi
   echo "candidate_bucket=$candidate_bucket"
   echo "market_l1_bucket=$market_l1_bucket"
   echo "research_output_bucket=$output_bucket"
+} | redact
+
+latest_universe_snapshot_object_json \
+  "$market_l1_bucket" \
+  "symbol_universe_snapshot/run_id=" > "$universe_object_json"
+universe_key="$(jq -r '.key // empty' "$universe_object_json")"
+if [[ -n "$universe_key" ]]; then
+  aws_cmd s3 cp "s3://${market_l1_bucket}/${universe_key}" - \
+  | jq -c \
+      --argjson object "$(cat "$universe_object_json")" '
+        def members: ((.included_symbols // []) + (.excluded_symbols // []));
+        def status_reason_counts:
+          members
+          | map(.status_reason // "unknown")
+          | group_by(.)
+          | map({reason:.[0], count:length})
+          | sort_by(.count)
+          | reverse;
+        {
+          present:true,
+          key:$object.key,
+          last_modified:$object.lastModified,
+          selection:$object.selection,
+          run_start_ms:$object.run_start_ms,
+          run_end_ms:$object.run_end_ms,
+          run_generated_ms:$object.run_generated_ms,
+          schema_version,
+          symbol_universe_snapshot_id,
+          universe_as_of_ms,
+          observed_symbols:[(.liquidity_rank_at_that_time // members)[]?.symbol_canonical],
+          approved_symbols:[(.included_symbols // [])[]?.symbol_canonical],
+          excluded_symbols:[(.excluded_symbols // [])[]?.symbol_canonical],
+          observed_symbol_count:((.liquidity_rank_at_that_time // members) | length),
+          approved_symbol_count:((.included_symbols // []) | length),
+          excluded_symbol_count:((.excluded_symbols // []) | length),
+          status_reason_counts:status_reason_counts
+        }
+      ' > "$universe_summary_json"
+else
+  jq -n -c '{
+    present:false,
+    observed_symbols:[],
+    approved_symbols:[],
+    excluded_symbols:[],
+    observed_symbol_count:0,
+    approved_symbol_count:0,
+    excluded_symbol_count:0,
+    status_reason_counts:[]
+  }' > "$universe_summary_json"
+fi
+
+{
+  jq -r '
+    "latest_universe_selection=\(.selection // "absent")",
+    "latest_universe_key=\(.key // "absent")",
+    "latest_universe_observed_count=\(.observed_symbol_count)",
+    "latest_universe_approved_count=\(.approved_symbol_count)"
+  ' "$universe_summary_json"
 } | redact
 
 list_latest_objects "$candidate_bucket" "candidate-evidence-bundle/priority=p0/" "$CANDIDATE_READ_LIMIT" > "$candidate_p0_json"
@@ -240,8 +357,33 @@ while IFS= read -r object; do
 done < <(jq -c '.[]' "$candidate_objects_json")
 
 jq -s -c \
-  --argjson max "$MAX_CANDIDATE_BUNDLE_COUNT" '
+  --arg mode "$UNIVERSE_MODE" \
+  --argjson universe "$(cat "$universe_summary_json")" '
+    def all_symbols_in($allowed):
+      (.symbols | length) > 0
+      and all(.symbols[]; . as $symbol | ($allowed | index($symbol)));
+
     map(select(.candidate_id != null and .research_eligible == true))
+    | map(. + {
+        current_universe_snapshot_id:($universe.symbol_universe_snapshot_id // null),
+        current_universe_as_of_ms:($universe.universe_as_of_ms // null),
+        current_universe_observed:all_symbols_in($universe.observed_symbols // []),
+        current_universe_approved:all_symbols_in($universe.approved_symbols // []),
+        bundle_current_universe_match:(.symbol_universe_snapshot_id == ($universe.symbol_universe_snapshot_id // null)),
+        universe_selection_mode:$mode
+      })
+  ' "$candidate_records_json" > "$all_candidates_json"
+
+jq -c \
+  --arg mode "$UNIVERSE_MODE" \
+  --argjson max "$MAX_CANDIDATE_BUNDLE_COUNT" '
+    map(select(
+      if $mode == "current_approved" then .current_universe_approved == true
+      elif $mode == "current_observed" then .current_universe_observed == true
+      elif $mode == "legacy_retest" then .research_eligible == true
+      else false
+      end
+    ))
     | sort_by(.last_modified, .key)
     | reverse
     | reduce .[] as $candidate ({};
@@ -253,11 +395,76 @@ jq -s -c \
     | sort_by(.last_modified, .key)
     | reverse
     | .[0:$max]
-  ' "$candidate_records_json" > "$selected_candidates_json"
+  ' "$all_candidates_json" > "$selected_candidates_json"
 
 selected_candidate_count="$(jq 'length' "$selected_candidates_json")"
 if [[ "$selected_candidate_count" == "0" ]]; then
-  echo "no research-eligible candidate bundles found in recent candidate objects" >&2
+  jq -n \
+    --arg generated_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg manifest_output "$MANIFEST_OUTPUT" \
+    --arg summary_output "$SUMMARY_OUTPUT" \
+    --arg region "$REGION" \
+    --arg dispatch_mode "$dispatch_mode" \
+    --arg universe_mode "$UNIVERSE_MODE" \
+    --argjson universe "$(cat "$universe_summary_json")" \
+    --argjson candidates "$(cat "$all_candidates_json")" \
+    '{
+      generated_at:$generated_at,
+      manifest_output:$manifest_output,
+      summary_output:$summary_output,
+      region:$region,
+      dispatch_mode:$dispatch_mode,
+      universe_mode:$universe_mode,
+      safety:{
+        s3_write:false,
+        ecs_task_started:false,
+        dispatcher_mode_changed:false,
+        local_manifest_only:true,
+        selected_candidates_require_current_universe:($universe_mode != "legacy_retest")
+      },
+      latest_universe:$universe,
+      selected_candidate_count:0,
+      scanned_research_eligible_candidate_count:($candidates | length),
+      current_observed_candidate_count:([$candidates[] | select(.current_universe_observed == true)] | length),
+      current_approved_candidate_count:([$candidates[] | select(.current_universe_approved == true)] | length),
+      legacy_bundle_approved_candidate_count:([$candidates[] | select(.approved_universe_symbol == true)] | length),
+      blocked_reason:"no_candidates_match_universe_mode"
+    }' > "$SUMMARY_OUTPUT"
+  jq -n \
+    --arg research_packet_id "$RESEARCH_PACKET_ID" \
+    --arg run_scope "$RUN_SCOPE" \
+    --argjson max_candidates "$MAX_CANDIDATE_BUNDLE_COUNT" \
+    --argjson max_history "$MAX_HISTORICAL_REPLAY_RUN_REF_COUNT" \
+    --argjson max_replay "$MAX_REPLAY_RUN_COUNT" \
+    '{
+      schema_version:"research_input_manifest_v1",
+      research_packet_id:$research_packet_id,
+      run_scope:$run_scope,
+      candidate_bundle_refs:[],
+      historical_replay_run_index_refs:[],
+      runtime_budget_policy:{
+        max_candidate_bundle_count:$max_candidates,
+        max_market_artifact_ref_count:2000,
+        max_shadow_validation_run_ref_count:10000,
+        max_hypothesis_harness_result_ref_count:10000,
+        max_oss_adapter_run_ref_count:10000,
+        max_historical_replay_run_ref_count:$max_history,
+        max_replay_run_count:$max_replay
+      }
+    }' > "$MANIFEST_OUTPUT"
+  {
+    echo "manifest_output=$MANIFEST_OUTPUT"
+    echo "summary_output=$SUMMARY_OUTPUT"
+    echo "selected_candidate_count=0"
+    jq -r '
+      "scanned_research_eligible_candidate_count=\(.scanned_research_eligible_candidate_count)",
+      "current_observed_candidate_count=\(.current_observed_candidate_count)",
+      "current_approved_candidate_count=\(.current_approved_candidate_count)",
+      "legacy_bundle_approved_candidate_count=\(.legacy_bundle_approved_candidate_count)",
+      "blocked_reason=\(.blocked_reason)"
+    ' "$SUMMARY_OUTPUT"
+  } | redact
+  echo "no candidate bundles matched RESEARCH_BATCH_UNIVERSE_MODE=$UNIVERSE_MODE" >&2
   exit 1
 fi
 
@@ -303,8 +510,11 @@ jq -n \
   --arg summary_output "$SUMMARY_OUTPUT" \
   --arg region "$REGION" \
   --arg dispatch_mode "$dispatch_mode" \
+  --arg universe_mode "$UNIVERSE_MODE" \
   --arg run_scope "$RUN_SCOPE" \
   --arg research_packet_id "$RESEARCH_PACKET_ID" \
+  --argjson universe "$(cat "$universe_summary_json")" \
+  --argjson scanned_candidates "$(cat "$all_candidates_json")" \
   --argjson candidates "$(cat "$selected_candidates_json")" \
   --argjson indexes "$(cat "$historical_index_objects_json")" \
   '{
@@ -313,14 +523,18 @@ jq -n \
     summary_output:$summary_output,
     region:$region,
     dispatch_mode:$dispatch_mode,
+    universe_mode:$universe_mode,
     safety:{
       s3_write:false,
       ecs_task_started:false,
       dispatcher_mode_changed:false,
-      local_manifest_only:true
+      local_manifest_only:true,
+      selected_candidates_require_current_universe:($universe_mode != "legacy_retest")
     },
+    latest_universe:$universe,
     research_packet_id:$research_packet_id,
     run_scope:$run_scope,
+    scanned_research_eligible_candidate_count:($scanned_candidates | length),
     selected_candidate_count:($candidates | length),
     distinct_candidate_symbols:([$candidates[].symbols[]?] | unique | sort),
     candidate_class_counts:(
@@ -335,6 +549,11 @@ jq -n \
     ),
     allowed_horizons:([$candidates[].allowed_horizons[]?] | unique | sort),
     approved_bundle_candidate_count:([$candidates[] | select(.approved_universe_symbol == true)] | length),
+    current_observed_candidate_count:([$scanned_candidates[] | select(.current_universe_observed == true)] | length),
+    current_approved_candidate_count:([$scanned_candidates[] | select(.current_universe_approved == true)] | length),
+    selected_current_observed_candidate_count:([$candidates[] | select(.current_universe_observed == true)] | length),
+    selected_current_approved_candidate_count:([$candidates[] | select(.current_universe_approved == true)] | length),
+    selected_bundle_current_universe_match_count:([$candidates[] | select(.bundle_current_universe_match == true)] | length),
     historical_replay_run_index_ref_count:($indexes | length),
     selected_candidates:($candidates | map({
       candidate_id,
@@ -343,6 +562,9 @@ jq -n \
       symbols,
       allowed_horizons,
       approved_universe_symbol,
+      current_universe_observed,
+      current_universe_approved,
+      bundle_current_universe_match,
       last_modified,
       key
     }))
@@ -355,6 +577,10 @@ jq -n \
     "selected_candidate_count=\(.selected_candidate_count)",
     "distinct_candidate_symbols=\(.distinct_candidate_symbols | join(","))",
     "allowed_horizons=\(.allowed_horizons | join(","))",
+    "universe_mode=\(.universe_mode)",
+    "current_observed_candidate_count=\(.current_observed_candidate_count)",
+    "current_approved_candidate_count=\(.current_approved_candidate_count)",
+    "selected_current_approved_candidate_count=\(.selected_current_approved_candidate_count)",
     "historical_replay_run_index_ref_count=\(.historical_replay_run_index_ref_count)",
     "safety=s3_write:\(.safety.s3_write),ecs_task_started:\(.safety.ecs_task_started),dispatcher_mode_changed:\(.safety.dispatcher_mode_changed)"
   ' "$SUMMARY_OUTPUT"
