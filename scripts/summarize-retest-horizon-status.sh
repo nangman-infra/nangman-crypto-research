@@ -110,11 +110,72 @@ jq \
         reason_codes,
         next_action
       });
+    def tracked_horizons: ["1h", "4h", "24h"];
+    def candidate_horizon_state($candidate_rows; $horizon):
+      ($candidate_rows | map(select(.horizon == $horizon)) | .[0]) as $row
+      | if $row == null then
+          {
+            horizon:$horizon,
+            requested:false,
+            next_action:"not_requested",
+            horizon_market_data_materialized:false,
+            replay_run_count:0,
+            completed_count:0,
+            completed_sample_deficit:null,
+            inferred_unseen_window_count:0,
+            unseen_window_deficit:null,
+            train_validation_split_materialized:false,
+            liquidity_filter_materialized_count:0,
+            missing_market_replay_data_count:0,
+            gate_biases:[],
+            reason_codes:["horizon_not_requested_by_candidate_bundle"],
+            promotion_gate_ready_for_review:false
+          }
+        else
+          {
+            horizon:$horizon,
+            requested:true,
+            next_action:$row.next_action,
+            horizon_market_data_materialized:($row.horizon_market_data_materialized // false),
+            replay_run_count:($row.replay_run_count // 0),
+            completed_count:($row.completed_count // 0),
+            completed_sample_deficit:($row.completed_sample_deficit // null),
+            inferred_unseen_window_count:($row.inferred_unseen_window_count // 0),
+            unseen_window_deficit:($row.unseen_window_deficit // null),
+            train_validation_split_materialized:($row.train_validation_split_materialized // false),
+            liquidity_filter_materialized_count:($row.liquidity_filter_materialized_count // 0),
+            missing_market_replay_data_count:($row.missing_market_replay_data_count // 0),
+            gate_biases:($row.gate_biases // []),
+            reason_codes:($row.reason_codes // []),
+            promotion_gate_ready_for_review:($row.next_action == "promotion_gate_ready_for_review")
+          }
+        end;
 
     (.horizon_rows // []) as $rows
     | ($driver_summary // {}) as $driver
     | ($driver_manifest_summary // {}) as $manifest_summary
     | ($driver.manifest.latest_universe // $manifest_summary.latest_universe // {}) as $latest_universe
+    | (
+        $rows
+        | sort_by(.primary_symbol, .candidate_id, .horizon)
+        | group_by(.candidate_id)
+        | map(. as $candidate_rows
+          | (tracked_horizons | map(candidate_horizon_state($candidate_rows; .))) as $tracked
+          | {
+              candidate_id:$candidate_rows[0].candidate_id,
+              candidate_lifecycle_key:$candidate_rows[0].candidate_lifecycle_key,
+              primary_symbol:$candidate_rows[0].primary_symbol,
+              symbols:$candidate_rows[0].symbols,
+              hypothesis_type:$candidate_rows[0].hypothesis_type,
+              research_priority:$candidate_rows[0].research_priority,
+              tracked_horizons:$tracked,
+              next_action_counts:($tracked | action_counts),
+              requested_horizon_count:($tracked | map(select(.requested == true)) | length),
+              missing_tracked_horizon_count:($tracked | map(select(.requested != true)) | length),
+              promotion_ready_horizon_count:($tracked | map(select(.promotion_gate_ready_for_review == true)) | length)
+            })
+        | sort_by(.primary_symbol, .candidate_id)
+      ) as $candidate_horizon_matrix
     | {
         schema_version:"research_horizon_status_checkpoint_v1",
         generated_at:$generated_at,
@@ -199,6 +260,27 @@ jq \
             })
         ),
         by_horizon:($rows | horizon_counts),
+        candidate_horizon_matrix_summary:{
+          tracked_horizons:tracked_horizons,
+          candidate_count:($candidate_horizon_matrix | length),
+          requested_horizon_slot_count:([
+            $candidate_horizon_matrix[].tracked_horizons[]?
+            | select(.requested == true)
+          ] | length),
+          missing_tracked_horizon_slot_count:([
+            $candidate_horizon_matrix[].tracked_horizons[]?
+            | select(.requested != true)
+          ] | length),
+          promotion_ready_horizon_count:([
+            $candidate_horizon_matrix[].tracked_horizons[]?
+            | select(.promotion_gate_ready_for_review == true)
+          ] | length),
+          next_action_counts:(
+            [$candidate_horizon_matrix[].tracked_horizons[]?]
+            | action_counts
+          )
+        },
+        candidate_horizon_matrix:$candidate_horizon_matrix,
         next_decision:{
           verdict:(
             if (($driver.stage_state.promotion_passed // false) == true) then "PROMOTE_PRESENT_REVIEW_BEFORE_SHADOW"

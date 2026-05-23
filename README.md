@@ -362,6 +362,7 @@ The checkpoint separates:
 - batch_state: selected candidates, replay count, RETEST/PROMOTE surface
 - by_symbol: per-symbol candidate and horizon status
 - by_horizon: 1h/4h/24h action counts, including market coverage extension needs
+- candidate_horizon_matrix: each candidate's 1h/4h/24h requested/replay/coverage/promotion-review state
 - missing_market_replay_data_count: horizon aggregate count used to identify coverage gaps
 - next_decision: safe next actions and blocked shadow/paper/live actions
 ```
