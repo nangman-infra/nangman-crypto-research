@@ -351,6 +351,39 @@ The batch driver writes this checkpoint automatically as
 outputs, start ECS tasks, switch the dispatcher, or create shadow/paper/live
 artifacts.
 
+## Focused Retest Manifest
+
+Use the focused retest manifest when a status checkpoint shows only a small set
+of horizons are ready for another local replay. It reads the local
+`retest-horizon-status.json` plus the source `research_input_manifest_v1`, then
+creates a smaller manifest containing only candidate bundles whose horizons
+match the requested `next_action`.
+
+```bash
+cd /Volumes/WD/Developments/nangman-crypto/apps/research-app
+
+RESEARCH_FOCUS_MANIFEST_OUTPUT=/tmp/nangman-crypto/research-focus/input-manifest.json \
+RESEARCH_FOCUS_SUMMARY_OUTPUT=/tmp/nangman-crypto/research-focus/input-manifest.summary.json \
+scripts/build-focused-retest-manifest.sh \
+  /tmp/nangman-crypto/research-current-approved-batch/<run-id>/retest-horizon-status.json \
+  /tmp/nangman-crypto/research-current-approved-batch/<run-id>/research-input-manifest.json
+```
+
+By default the focused manifest selects horizons with:
+
+```text
+run_research_replay_for_horizon
+materialize_completed_native_replay_sample
+```
+
+Override with `RESEARCH_FOCUS_NEXT_ACTIONS=action_a,action_b`. The script is
+local-manifest only. By default it excludes historical replay index refs so a
+small focused run does not pull unrelated historical aggregates into the
+checkpoint. Set `RESEARCH_FOCUS_INCLUDE_HISTORICAL_INDEX_REFS=true` only when
+the focused manifest is meant to reuse the source manifest's full historical
+evidence surface. The script does not fetch candidate bundles, upload reports,
+start ECS tasks, switch the dispatcher, or create shadow/paper/live artifacts.
+
 ## Post-Activation Runtime Check
 
 After an approved output-enabled run or dispatcher activation, verify the
