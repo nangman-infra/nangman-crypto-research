@@ -2,7 +2,7 @@ use crate::artifacts::{build_replay_run_index_records, build_research_aggregate_
 use crate::error::{AppError, AppResult};
 use crate::io::{
     ResearchOutputArtifacts, read_candidate_bundles_from_bytes,
-    read_market_feature_deltas_from_bytes, read_market_regime_contexts_from_bytes,
+    read_market_feature_deltas_matching_symbols_from_bytes, read_market_regime_contexts_from_bytes,
     read_oss_adapter_runs_from_bytes, read_replay_run_index_records_from_bytes,
     read_replay_runs_from_bytes, read_research_input_manifest_from_bytes,
     read_shadow_validation_runs_from_bytes,
@@ -17,6 +17,7 @@ use aws_sdk_s3::config::Builder as S3ConfigBuilder;
 use aws_sdk_s3::error::ProvideErrorMetadata;
 use aws_types::region::Region;
 use chrono::{DateTime, Datelike, Timelike, Utc};
+use std::collections::BTreeSet;
 use std::env;
 
 pub async fn read_candidate_bundles_from_s3(
@@ -40,6 +41,7 @@ pub async fn read_research_input_manifest_from_s3(
 pub async fn read_market_feature_deltas_from_s3(
     bucket: &str,
     keys: &[String],
+    symbols: &BTreeSet<String>,
 ) -> AppResult<Vec<MarketFeatureDelta>> {
     let client = s3_client().await;
     let mut deltas = Vec::new();
@@ -49,9 +51,10 @@ pub async fn read_market_feature_deltas_from_s3(
             Err(error) if is_missing_market_artifact(&error) => continue,
             Err(error) => return Err(error),
         };
-        deltas.extend(read_market_feature_deltas_from_bytes(
+        deltas.extend(read_market_feature_deltas_matching_symbols_from_bytes(
             &format!("s3://{bucket}/{key}"),
             bytes.as_ref(),
+            symbols,
         )?);
     }
     Ok(deltas)

@@ -713,7 +713,10 @@ async fn load_market_deltas(
     if keys.is_empty() {
         return Ok(deltas);
     }
-    deltas.extend(read_market_feature_deltas_from_s3(market_l1_s3_bucket(args), &keys).await?);
+    let symbols = bundle_symbol_filter(bundles);
+    deltas.extend(
+        read_market_feature_deltas_from_s3(market_l1_s3_bucket(args), &keys, &symbols).await?,
+    );
     Ok(deltas)
 }
 
@@ -918,7 +921,12 @@ async fn read_market_feature_deltas_from_ref(
     match ArtifactLocation::from_uri(&artifact_ref.uri)? {
         ArtifactLocation::Local(path) => read_market_feature_deltas(&path),
         ArtifactLocation::S3 { bucket, key } => {
-            read_market_feature_deltas_from_s3(&bucket, std::slice::from_ref(&key)).await
+            read_market_feature_deltas_from_s3(
+                &bucket,
+                std::slice::from_ref(&key),
+                &BTreeSet::new(),
+            )
+            .await
         }
     }
 }
@@ -1156,6 +1164,13 @@ fn should_read_market_s3(args: &Args) -> bool {
         || args.market_l1_s3_bucket.is_some()
         || !args.market_feature_delta_s3_keys.is_empty()
         || !args.market_regime_context_s3_keys.is_empty()
+}
+
+fn bundle_symbol_filter(bundles: &[IntelCandidateEvidenceBundle]) -> BTreeSet<String> {
+    bundles
+        .iter()
+        .flat_map(|bundle| bundle.normalized_symbols.iter().cloned())
+        .collect()
 }
 
 fn market_l1_s3_bucket(args: &Args) -> &str {

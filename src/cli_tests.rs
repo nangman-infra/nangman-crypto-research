@@ -1,6 +1,7 @@
 use super::*;
 use crate::time::now_ms;
 use serde_json::{Value, json};
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -207,6 +208,26 @@ fn market_regime_json(regime_context_id: &str, window_start_ms: i64, window_end_
         "quality_status": "available",
         "missing_reasons": []
     })
+}
+
+#[test]
+fn market_delta_symbol_filter_keeps_only_candidate_symbols() {
+    let sui = market_delta_json("delta_sui", 1_300, 3_601_300, 0.5);
+    let mut btc = market_delta_json("delta_btc", 1_300, 3_601_300, 0.5);
+    btc["symbol_native"] = json!("BTCUSDT");
+    btc["symbol_canonical"] = json!("BTC");
+    let bytes = serde_json::to_vec(&json!([sui, btc])).expect("test deltas serialize");
+    let symbols = BTreeSet::from(["SUI".to_owned()]);
+
+    let deltas = crate::io::read_market_feature_deltas_matching_symbols_from_bytes(
+        "test-market-deltas",
+        &bytes,
+        &symbols,
+    )
+    .expect("filtered deltas parse");
+
+    assert_eq!(deltas.len(), 1);
+    assert_eq!(deltas[0].symbol_canonical, "SUI");
 }
 
 fn oss_adapter_run_json(candidate_lifecycle_key: &str, verdict: &str) -> Value {
