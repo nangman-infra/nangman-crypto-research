@@ -95,6 +95,7 @@ jq \
         train_validation_split_materialized,
         liquidity_filter_required,
         liquidity_filter_materialized_count,
+        missing_market_replay_data_count,
         gate_biases,
         reason_codes,
         next_action

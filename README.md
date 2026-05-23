@@ -327,6 +327,9 @@ Candidate-level `summary_findings.reason_codes` are preserved separately as
 `candidate_reason_codes`, but they are not used to mark every horizon as a
 Market-L1 coverage gap. This keeps stale or cross-horizon candidate reasons from
 masking horizons that are already ready for replay.
+The planner also treats aggregate `missing_market_replay_data_count > 0` as a
+horizon coverage gap, because aggregate gate reasons can otherwise collapse the
+same surface to `no_completed_native_replay_samples`.
 
 ## Retest Horizon Status
 
@@ -350,6 +353,7 @@ The checkpoint separates:
 - batch_state: selected candidates, replay count, RETEST/PROMOTE surface
 - by_symbol: per-symbol candidate and horizon status
 - by_horizon: 1h/4h/24h action counts, including market coverage extension needs
+- missing_market_replay_data_count: horizon aggregate count used to identify coverage gaps
 - next_decision: safe next actions and blocked shadow/paper/live actions
 ```
 

@@ -163,7 +163,13 @@ jq \
         | ($bundle.validation_requirements.include_liquidity_filter // false) as $liquidity_required
         | ($matched | map(.train_validation_split_summary.materialized // false) | any_true) as $split_materialized
         | ($matched | map(.liquidity_filter_materialized_count // 0) | max_or_zero) as $liquidity_materialized
-        | ($matched | map(.gate_reason_codes // []) | add // [] | unique_sorted) as $aggregate_reason_codes
+        | ($matched | map(.missing_market_replay_data_count // 0) | add // 0) as $missing_market_replay_data_count
+        | ($matched | map(.gate_reason_codes // []) | add // [] | unique_sorted) as $aggregate_gate_reason_codes
+        | (
+            $aggregate_gate_reason_codes
+            + (if $missing_market_replay_data_count > 0 then ["missing_native_replay_market_data"] else [] end)
+            | unique_sorted
+          ) as $aggregate_reason_codes
         | (
             ($report.summary_findings // [])
             | map(select(.candidate_id == $bundle.candidate_id))
@@ -203,6 +209,7 @@ jq \
             train_validation_split_materialized:$split_materialized,
             liquidity_filter_required:$liquidity_required,
             liquidity_filter_materialized_count:$liquidity_materialized,
+            missing_market_replay_data_count:$missing_market_replay_data_count,
             aggregate_count:($matched | length),
             gate_biases:($matched | map(.gate_bias) | unique_sorted),
             reason_codes:$reason_codes,
