@@ -335,13 +335,20 @@ jq \
     | ($rows | map(select((.replay_run_count // 0) > 0) | .primary_symbol) | unique_sorted) as $research_replayed_symbols
     | ($rows | map(select(.next_action == "promotion_gate_ready_for_review") | .primary_symbol) | unique_sorted) as $promotion_ready_symbols
     | ($rows | map(select(any((.gate_biases // [])[]?; startswith("PROMOTE"))) | .primary_symbol) | unique_sorted) as $promoted_symbols
+    | ($rows | map(.candidate_id) | unique_sorted) as $candidate_ids
+    | ($rows | map(select((.replay_run_count // 0) > 0) | .candidate_id) | unique_sorted) as $research_replayed_candidate_ids
+    | ($rows | map(select(.next_action == "promotion_gate_ready_for_review") | .candidate_id) | unique_sorted) as $promotion_ready_candidate_ids
+    | ($rows | map(select(any((.gate_biases // [])[]?; startswith("PROMOTE"))) | .candidate_id) | unique_sorted) as $promoted_candidate_ids
     | ($candidate_symbols - $research_replayed_symbols) as $candidate_symbols_without_replay
+    | ($candidate_ids - $research_replayed_candidate_ids) as $candidate_ids_without_replay
     | ($research_replayed_symbols - $promotion_ready_symbols) as $replayed_symbols_without_promotion_ready
     | ($research_replayed_symbols - $promoted_symbols) as $replayed_symbols_without_promotion
+    | ($research_replayed_candidate_ids - $promotion_ready_candidate_ids) as $replayed_candidate_ids_without_promotion_ready
+    | ($research_replayed_candidate_ids - $promoted_candidate_ids) as $replayed_candidate_ids_without_promotion
     | (
         if (($approved_symbols | length) > 0 and ($approved_symbols_without_selected_candidate | length) > 0)
           then "candidate_generation_coverage"
-        elif (($candidate_symbols_without_replay | length) > 0)
+        elif (($candidate_ids_without_replay | length) > 0)
           then "research_replay_coverage"
         elif (($promotion_ready_symbols | length) > 0 and ((.stage_state.shadow_created // false) != true))
           then "shadow_review_gate"
@@ -383,9 +390,13 @@ jq \
           major50_observed_symbol_count:($latest_universe.observed_symbol_count // ($observed_symbols | length)),
           major50_approved_symbol_count:($latest_universe.approved_symbol_count // ($approved_symbols | length)),
           candidate_generated_symbol_count:($candidate_symbols | length),
+          candidate_generated_candidate_count:($candidate_ids | length),
           research_replayed_symbol_count:($research_replayed_symbols | length),
+          research_replayed_candidate_count:($research_replayed_candidate_ids | length),
           promotion_ready_symbol_count:($promotion_ready_symbols | length),
+          promotion_ready_candidate_count:($promotion_ready_candidate_ids | length),
           promoted_symbol_count:($promoted_symbols | length),
+          promoted_candidate_count:($promoted_candidate_ids | length),
           shadow_created:((.stage_state.shadow_created // false) == true),
           paper_created:((.stage_state.paper_created // false) == true),
           live_enabled:false,
@@ -394,21 +405,40 @@ jq \
             research_replayed:$research_replayed_symbols,
             promotion_ready:$promotion_ready_symbols,
             promoted:$promoted_symbols
+          },
+          candidates:{
+            candidate_generated:$candidate_ids,
+            research_replayed:$research_replayed_candidate_ids,
+            promotion_ready:$promotion_ready_candidate_ids,
+            promoted:$promoted_candidate_ids
           }
         },
         coverage_gaps:{
           approved_symbols_without_candidate:$approved_symbols_without_selected_candidate,
           candidate_symbols_without_replay:$candidate_symbols_without_replay,
+          candidate_ids_without_replay:$candidate_ids_without_replay,
           replayed_symbols_without_promotion_ready:$replayed_symbols_without_promotion_ready,
           replayed_symbols_without_promotion:$replayed_symbols_without_promotion,
+          replayed_candidate_ids_without_promotion_ready:$replayed_candidate_ids_without_promotion_ready,
+          replayed_candidate_ids_without_promotion:$replayed_candidate_ids_without_promotion,
           promotion_ready_symbols_without_shadow:(
             if ((.stage_state.shadow_created // false) == true) then []
             else $promotion_ready_symbols
             end
           ),
+          promotion_ready_candidate_ids_without_shadow:(
+            if ((.stage_state.shadow_created // false) == true) then []
+            else $promotion_ready_candidate_ids
+            end
+          ),
           promoted_symbols_without_shadow:(
             if ((.stage_state.shadow_created // false) == true) then []
             else $promoted_symbols
+            end
+          ),
+          promoted_candidate_ids_without_shadow:(
+            if ((.stage_state.shadow_created // false) == true) then []
+            else $promoted_candidate_ids
             end
           )
         },
@@ -418,22 +448,29 @@ jq \
             major50_observed:($latest_universe.observed_symbol_count // ($observed_symbols | length)),
             major50_approved:($latest_universe.approved_symbol_count // ($approved_symbols | length)),
             candidate_generated:($candidate_symbols | length),
+            candidate_generated_candidates:($candidate_ids | length),
             research_replayed:($research_replayed_symbols | length),
+            research_replayed_candidates:($research_replayed_candidate_ids | length),
             promotion_ready:($promotion_ready_symbols | length),
-            promoted:($promoted_symbols | length)
+            promotion_ready_candidates:($promotion_ready_candidate_ids | length),
+            promoted:($promoted_symbols | length),
+            promoted_candidates:($promoted_candidate_ids | length)
           },
           gap_counts:{
             approved_symbols_without_candidate:($approved_symbols_without_selected_candidate | length),
             candidate_symbols_without_replay:($candidate_symbols_without_replay | length),
+            candidate_ids_without_replay:($candidate_ids_without_replay | length),
             replayed_symbols_without_promotion_ready:($replayed_symbols_without_promotion_ready | length),
-            replayed_symbols_without_promotion:($replayed_symbols_without_promotion | length)
+            replayed_symbols_without_promotion:($replayed_symbols_without_promotion | length),
+            replayed_candidate_ids_without_promotion_ready:($replayed_candidate_ids_without_promotion_ready | length),
+            replayed_candidate_ids_without_promotion:($replayed_candidate_ids_without_promotion | length)
           },
           safe_next_actions:(
             [
               if ($approved_symbols_without_selected_candidate | length) > 0
                 then "increase_candidate_generation_for_approved_major50_symbols"
                 else empty end,
-              if ($candidate_symbols_without_replay | length) > 0
+              if ($candidate_ids_without_replay | length) > 0
                 then "build_focused_research_manifest_for_unreplayed_candidate_symbols"
                 else empty end,
               if (.next_decision.safe_next_actions // [] | index("extend_market_l1_horizon_coverage") != null)
