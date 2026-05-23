@@ -13,6 +13,7 @@ use crate::model::{
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::Client;
 use aws_sdk_s3::config::Builder as S3ConfigBuilder;
+use aws_sdk_s3::error::ProvideErrorMetadata;
 use aws_types::region::Region;
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use std::env;
@@ -42,7 +43,11 @@ pub async fn read_market_feature_deltas_from_s3(
     let client = s3_client().await;
     let mut deltas = Vec::new();
     for key in keys {
-        let bytes = get_object_bytes(&client, bucket, key).await?;
+        let bytes = match get_object_bytes(&client, bucket, key).await {
+            Ok(bytes) => bytes,
+            Err(error) if is_missing_market_artifact(&error) => continue,
+            Err(error) => return Err(error),
+        };
         deltas.extend(read_market_feature_deltas_from_bytes(
             &format!("s3://{bucket}/{key}"),
             bytes.as_ref(),
@@ -58,7 +63,11 @@ pub async fn read_market_regime_contexts_from_s3(
     let client = s3_client().await;
     let mut contexts = Vec::new();
     for key in keys {
-        let bytes = get_object_bytes(&client, bucket, key).await?;
+        let bytes = match get_object_bytes(&client, bucket, key).await {
+            Ok(bytes) => bytes,
+            Err(error) if is_missing_market_artifact(&error) => continue,
+            Err(error) => return Err(error),
+        };
         contexts.extend(read_market_regime_contexts_from_bytes(
             &format!("s3://{bucket}/{key}"),
             bytes.as_ref(),
@@ -274,6 +283,11 @@ async fn get_object_bytes(client: &Client, bucket: &str, key: &str) -> AppResult
         .send()
         .await
         .map_err(|error| {
+            if let Some(service_error) = error.as_service_error()
+                && service_error.code() == Some("NoSuchKey")
+            {
+                return AppError::AwsNotFound(format!("s3://{bucket}/{key}"));
+            }
             AppError::Aws(format!(
                 "s3 get_object s3://{bucket}/{key}: {}",
                 aws_error_detail(&error)
@@ -292,6 +306,10 @@ async fn get_object_bytes(client: &Client, bucket: &str, key: &str) -> AppResult
         .into_bytes()
         .to_vec();
     Ok(bytes)
+}
+
+fn is_missing_market_artifact(error: &AppError) -> bool {
+    matches!(error, AppError::AwsNotFound(_))
 }
 
 fn validate_s3_location(bucket: &str, key: &str, label: &str) -> AppResult<()> {
@@ -407,4 +425,23 @@ fn normalize_prefix(prefix: &str) -> String {
         return String::new();
     }
     format!("{}/", trimmed.trim_end_matches('/'))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_market_artifact_errors_are_skippable() {
+        let error = AppError::AwsNotFound("s3://bucket/missing.json".to_owned());
+
+        assert!(is_missing_market_artifact(&error));
+    }
+
+    #[test]
+    fn non_not_found_aws_errors_are_not_skippable() {
+        let error = AppError::Aws("AccessDenied".to_owned());
+
+        assert!(!is_missing_market_artifact(&error));
+    }
 }

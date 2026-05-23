@@ -5,6 +5,7 @@ pub type AppResult<T> = Result<T, AppError>;
 #[derive(Debug)]
 pub enum AppError {
     Aws(String),
+    AwsNotFound(String),
     Config(String),
     Io(String),
     Json(String),
@@ -29,6 +30,7 @@ impl Display for AppError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Aws(message) => write!(formatter, "aws error: {message}"),
+            Self::AwsNotFound(message) => write!(formatter, "aws not found: {message}"),
             Self::Config(message) => write!(formatter, "config error: {message}"),
             Self::Io(message) => write!(formatter, "io error: {message}"),
             Self::Json(message) => write!(formatter, "json error: {message}"),
