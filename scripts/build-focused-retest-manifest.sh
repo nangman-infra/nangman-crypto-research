@@ -6,7 +6,7 @@ SOURCE_MANIFEST_FILE="${RESEARCH_SOURCE_MANIFEST_FILE:-${2:-}}"
 FOCUS_NEXT_ACTIONS="${RESEARCH_FOCUS_NEXT_ACTIONS:-run_research_replay_for_horizon,accumulate_completed_native_replay_samples,materialize_completed_native_replay_sample}"
 FOCUS_PACKET_ID="${RESEARCH_FOCUS_PACKET_ID:-research_focus_$(date -u +%Y%m%dT%H%M%SZ)}"
 FOCUS_RUN_SCOPE="${RESEARCH_FOCUS_RUN_SCOPE:-focused_retest_local_validation}"
-INCLUDE_HISTORICAL_INDEX_REFS="${RESEARCH_FOCUS_INCLUDE_HISTORICAL_INDEX_REFS:-false}"
+INCLUDE_HISTORICAL_INDEX_REFS="${RESEARCH_FOCUS_INCLUDE_HISTORICAL_INDEX_REFS:-auto}"
 INCLUDE_HISTORICAL_INDEX_REFS_NORMALIZED="$(printf '%s' "$INCLUDE_HISTORICAL_INDEX_REFS" | tr '[:upper:]' '[:lower:]')"
 
 require_command() {
@@ -47,9 +47,9 @@ require_command mktemp
 require_absolute_file "RESEARCH_HORIZON_STATUS_FILE or first argument" "$STATUS_FILE"
 require_absolute_file "RESEARCH_SOURCE_MANIFEST_FILE or second argument" "$SOURCE_MANIFEST_FILE"
 case "$INCLUDE_HISTORICAL_INDEX_REFS_NORMALIZED" in
-  true | false) ;;
+  auto | true | false) ;;
   *)
-    echo "RESEARCH_FOCUS_INCLUDE_HISTORICAL_INDEX_REFS must be true or false; got $INCLUDE_HISTORICAL_INDEX_REFS" >&2
+    echo "RESEARCH_FOCUS_INCLUDE_HISTORICAL_INDEX_REFS must be auto, true, or false; got $INCLUDE_HISTORICAL_INDEX_REFS" >&2
     exit 1
     ;;
 esac
@@ -119,6 +119,13 @@ jq -n \
       ) as $focus_rows
     | ($focus_rows | map(.candidate_id) | unique_sorted) as $focus_candidate_ids
     | (
+        $include_historical_index_refs == "true"
+        or (
+          $include_historical_index_refs == "auto"
+          and ($actions | index("accumulate_completed_native_replay_samples")) != null
+        )
+      ) as $carry_historical_index_refs
+    | (
         ($source_manifest.candidate_bundle_refs // [])
         | map(. + {candidate_id:candidate_id_from_uri})
       ) as $source_refs
@@ -129,7 +136,7 @@ jq -n \
       ) as $selected_refs
     | ($selected_refs | map(.candidate_id) | unique_sorted) as $selected_candidate_ids
     | (
-        if $include_historical_index_refs == "true" then
+        if $carry_historical_index_refs then
           ($source_manifest.historical_replay_run_index_refs // [])
         else
           []
@@ -150,7 +157,8 @@ jq -n \
             dispatcher_mode_changed:false,
             local_manifest_only:true,
             selected_from_existing_current_approved_status:true,
-            historical_replay_run_index_refs_carried:($include_historical_index_refs == "true")
+            historical_replay_run_index_ref_mode:$include_historical_index_refs,
+            historical_replay_run_index_refs_carried:$carry_historical_index_refs
           },
           source:{
             research_packet_id:$source_manifest.research_packet_id,

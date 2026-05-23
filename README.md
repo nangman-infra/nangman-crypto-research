@@ -459,12 +459,13 @@ Market-L1 aggregate coverage is materialized will keep producing
 `missing_native_replay_market_data`.
 
 Override with `RESEARCH_FOCUS_NEXT_ACTIONS=action_a,action_b`. The script is
-local-manifest only. By default it excludes historical replay index refs so a
-small focused run does not pull unrelated historical aggregates into the
-checkpoint. Set `RESEARCH_FOCUS_INCLUDE_HISTORICAL_INDEX_REFS=true` only when
-the focused manifest is meant to reuse the source manifest's full historical
-evidence surface. The script does not fetch candidate bundles, upload reports,
-start ECS tasks, switch the dispatcher, or create shadow/paper/live artifacts.
+local-manifest only. `RESEARCH_FOCUS_INCLUDE_HISTORICAL_INDEX_REFS` defaults to
+`auto`: it carries historical replay index refs when the focused action includes
+`accumulate_completed_native_replay_samples`, and otherwise keeps small focused
+runs light. Set it to `true` to always reuse the source manifest's full
+historical evidence surface, or `false` to force current-run-only evidence. The
+script does not fetch candidate bundles, upload reports, start ECS tasks, switch
+the dispatcher, or create shadow/paper/live artifacts.
 If no horizons match the requested actions, it writes an empty manifest and
 summary, reports `selected_candidate_bundle_ref_count=0`, and exits non-zero so
 operators do not accidentally treat an empty focused run as replay evidence.
