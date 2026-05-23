@@ -148,6 +148,54 @@ Only after this passes and research output upload is explicitly approved should
 operators switch `RESEARCH_DISPATCH_MODE=run_task` or run an output-enabled
 one-shot ECS task.
 
+## Research Loop State Check
+
+Use the loop-state check when deciding whether the system is merely alive or
+actually moving candidates through the research factory. It is read-only: it
+does not write reports, start ECS tasks, switch dispatcher mode, or create
+shadow/paper artifacts.
+
+```bash
+cd /Volumes/WD/Developments/nangman-crypto/apps/research-app
+
+AWS_PROFILE=<sso-profile> \
+AWS_REGION=ap-northeast-2 \
+scripts/check-loop-state.sh
+```
+
+The output separates these states:
+
+```text
+- runtime_alive
+- dispatcher_auto_research_enabled
+- major50_universe_observed
+- major50_universe_approved
+- candidate_generated
+- artifact_created
+- research_replay_completed
+- promotion_passed
+- shadow_created
+- paper_created
+- live_enabled
+```
+
+The expected progression is:
+
+```text
+major-50 universe
+  -> candidate evidence bundle
+  -> research replay
+  -> RETEST / PROMOTE / PRUNE
+  -> shadow only after PROMOTE
+  -> paper only after completed passed shadow
+  -> live remains false in research-app
+```
+
+This check intentionally reports bottlenecks such as `dispatcher_not_run_task`,
+`major50_approved_universe_incomplete`, `no_promoted_shadow_candidate`,
+`shadow_output_absent`, and `paper_output_absent` instead of calling the system
+"done" just because ECS or Lambda is healthy.
+
 ## Post-Activation Runtime Check
 
 After an approved output-enabled run or dispatcher activation, verify the
