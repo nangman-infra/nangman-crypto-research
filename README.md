@@ -321,6 +321,36 @@ The output separates:
 - materialize_liquidity_filter_inputs
 ```
 
+## Retest Horizon Status
+
+Use the retest horizon status summary to track every candidate by symbol and
+1h/4h/24h horizon after a batch run. It reads the local retest horizon plan and
+optional batch driver summary, then emits a compact checkpoint for repeated
+operator review.
+
+```bash
+cd /Volumes/WD/Developments/nangman-crypto/apps/research-app
+
+scripts/summarize-retest-horizon-status.sh \
+  /tmp/nangman-crypto/research-current-approved-batch/<run-id>/retest-horizon-plan.json \
+  /tmp/nangman-crypto/research-current-approved-batch/<run-id>/batch-driver-summary.json
+```
+
+The checkpoint separates:
+
+```text
+- stage_state: candidate_generated, research_replay_completed, promotion_passed, shadow_created, paper_created, live_enabled
+- batch_state: selected candidates, replay count, RETEST/PROMOTE surface
+- by_symbol: per-symbol candidate and horizon status
+- by_horizon: 1h/4h/24h action counts
+- next_decision: safe next actions and blocked shadow/paper/live actions
+```
+
+The batch driver writes this checkpoint automatically as
+`retest-horizon-status.json`. The summary is local-only: it does not upload S3
+outputs, start ECS tasks, switch the dispatcher, or create shadow/paper/live
+artifacts.
+
 ## Post-Activation Runtime Check
 
 After an approved output-enabled run or dispatcher activation, verify the

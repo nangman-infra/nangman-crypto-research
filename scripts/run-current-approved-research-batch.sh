@@ -14,6 +14,7 @@ MANIFEST_SUMMARY_OUTPUT="${RESEARCH_BATCH_SUMMARY_OUTPUT:-${RUN_DIR}/research-in
 RESEARCH_OUTPUT_DIR="${RESEARCH_BATCH_DRIVER_OUTPUT_DIR:-${RUN_DIR}/research-output}"
 REPORT_SUMMARY_OUTPUT="${RESEARCH_BATCH_DRIVER_REPORT_SUMMARY_OUTPUT:-${RUN_DIR}/research-report-summary.json}"
 RETEST_HORIZON_PLAN_OUTPUT="${RESEARCH_BATCH_DRIVER_RETEST_HORIZON_PLAN_OUTPUT:-${RUN_DIR}/retest-horizon-plan.json}"
+RETEST_HORIZON_STATUS_OUTPUT="${RESEARCH_BATCH_DRIVER_RETEST_HORIZON_STATUS_OUTPUT:-${RUN_DIR}/retest-horizon-status.json}"
 DRIVER_SUMMARY_OUTPUT="${RESEARCH_BATCH_DRIVER_SUMMARY_OUTPUT:-${RUN_DIR}/batch-driver-summary.json}"
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -159,6 +160,7 @@ require_absolute_path "RESEARCH_BATCH_SUMMARY_OUTPUT" "$MANIFEST_SUMMARY_OUTPUT"
 require_absolute_path "RESEARCH_BATCH_DRIVER_OUTPUT_DIR" "$RESEARCH_OUTPUT_DIR"
 require_absolute_path "RESEARCH_BATCH_DRIVER_REPORT_SUMMARY_OUTPUT" "$REPORT_SUMMARY_OUTPUT"
 require_absolute_path "RESEARCH_BATCH_DRIVER_RETEST_HORIZON_PLAN_OUTPUT" "$RETEST_HORIZON_PLAN_OUTPUT"
+require_absolute_path "RESEARCH_BATCH_DRIVER_RETEST_HORIZON_STATUS_OUTPUT" "$RETEST_HORIZON_STATUS_OUTPUT"
 require_absolute_path "RESEARCH_BATCH_DRIVER_SUMMARY_OUTPUT" "$DRIVER_SUMMARY_OUTPUT"
 
 if [[ "$UNIVERSE_MODE" != "current_approved" && "${RESEARCH_BATCH_DRIVER_ALLOW_NON_APPROVED_UNIVERSE:-false}" != "true" ]]; then
@@ -265,6 +267,7 @@ jq -n \
   --arg registry_file "$registry_file" \
   --arg report_summary_file "$REPORT_SUMMARY_OUTPUT" \
   --arg retest_horizon_plan_file "$RETEST_HORIZON_PLAN_OUTPUT" \
+  --arg retest_horizon_status_file "$RETEST_HORIZON_STATUS_OUTPUT" \
   --argjson manifest_summary "$(cat "$MANIFEST_SUMMARY_OUTPUT")" \
   --argjson report_summary "$(cat "$REPORT_SUMMARY_OUTPUT")" \
   --argjson retest_horizon_plan "$(cat "$RETEST_HORIZON_PLAN_OUTPUT")" \
@@ -280,6 +283,7 @@ jq -n \
     registry_file:(if $registry_file == "" then null else $registry_file end),
     report_summary_file:$report_summary_file,
     retest_horizon_plan_file:$retest_horizon_plan_file,
+    retest_horizon_status_file:$retest_horizon_status_file,
     safety:{
       s3_write:false,
       ecs_task_started:false,
@@ -318,8 +322,22 @@ jq -n \
 require_absolute_file "batch driver summary output" "$DRIVER_SUMMARY_OUTPUT"
 
 echo
+echo "== retest horizon status checkpoint =="
+"${script_dir}/summarize-retest-horizon-status.sh" "$RETEST_HORIZON_PLAN_OUTPUT" "$DRIVER_SUMMARY_OUTPUT" > "$RETEST_HORIZON_STATUS_OUTPUT"
+require_absolute_file "retest horizon status output" "$RETEST_HORIZON_STATUS_OUTPUT"
+jq -r '
+  "horizon_status_verdict=\(.next_decision.verdict)",
+  "candidate_count=\(.horizon_summary.candidate_count)",
+  "horizon_count=\(.horizon_summary.horizon_count)",
+  "symbols=\(.horizon_summary.symbols | join(","))",
+  "next_action_counts=\(.horizon_summary.next_action_counts | map(.next_action + ":" + (.count|tostring)) | join(","))",
+  "blocked_actions=\(.next_decision.blocked_actions | join(","))"
+' "$RETEST_HORIZON_STATUS_OUTPUT" | redact
+
+echo
 {
   echo "batch_driver_summary=$DRIVER_SUMMARY_OUTPUT"
+  echo "retest_horizon_status=$RETEST_HORIZON_STATUS_OUTPUT"
   jq -r '
     "selected_candidate_count=\(.manifest.selected_candidate_count)",
     "distinct_candidate_symbols=\(.manifest.distinct_candidate_symbols | join(","))",
