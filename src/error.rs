@@ -52,3 +52,15 @@ impl From<serde_json::Error> for AppError {
         Self::Json(value.to_string())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn aws_not_found_display_is_specific() {
+        let error = AppError::AwsNotFound("s3://bucket/key.json".to_owned());
+
+        assert_eq!(error.to_string(), "aws not found: s3://bucket/key.json");
+    }
+}
