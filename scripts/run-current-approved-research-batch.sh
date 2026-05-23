@@ -306,6 +306,10 @@ jq -n \
     manifest:{
       universe_mode:$manifest_summary.universe_mode,
       dispatch_mode:$manifest_summary.dispatch_mode,
+      latest_universe:$manifest_summary.latest_universe,
+      scanned_research_eligible_candidate_count:$manifest_summary.scanned_research_eligible_candidate_count,
+      current_observed_candidate_count:$manifest_summary.current_observed_candidate_count,
+      current_approved_candidate_count:$manifest_summary.current_approved_candidate_count,
       selected_candidate_count:$manifest_summary.selected_candidate_count,
       distinct_candidate_symbols:$manifest_summary.distinct_candidate_symbols,
       allowed_horizons:$manifest_summary.allowed_horizons,
@@ -328,6 +332,8 @@ echo "== retest horizon status checkpoint =="
 require_absolute_file "retest horizon status output" "$RETEST_HORIZON_STATUS_OUTPUT"
 jq -r '
   "horizon_status_verdict=\(.next_decision.verdict)",
+  "major50_observed_symbol_count=\(.major50_state.observed_symbol_count)",
+  "major50_approved_symbol_count=\(.major50_state.approved_symbol_count)",
   "candidate_count=\(.horizon_summary.candidate_count)",
   "horizon_count=\(.horizon_summary.horizon_count)",
   "symbols=\(.horizon_summary.symbols | join(","))",
@@ -342,6 +348,7 @@ echo
   echo "retest_horizon_status=$RETEST_HORIZON_STATUS_OUTPUT"
   jq -r '
     "selected_candidate_count=\(.manifest.selected_candidate_count)",
+    "current_approved_candidate_count=\(.manifest.current_approved_candidate_count)",
     "distinct_candidate_symbols=\(.manifest.distinct_candidate_symbols | join(","))",
     "research_replay_completed=\(.stage_state.research_replay_completed)",
     "promotion_passed=\(.stage_state.promotion_passed)",

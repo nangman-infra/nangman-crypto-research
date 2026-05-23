@@ -31,8 +31,15 @@ require_absolute_file "RESEARCH_RETEST_HORIZON_PLAN_FILE or first argument" "$PL
 if [[ -n "$DRIVER_SUMMARY_FILE" ]]; then
   require_absolute_file "RESEARCH_BATCH_DRIVER_SUMMARY_FILE or second argument" "$DRIVER_SUMMARY_FILE"
   driver_summary_json="$(cat "$DRIVER_SUMMARY_FILE")"
+  driver_manifest_summary_file="$(jq -r '.manifest_summary_file // empty' "$DRIVER_SUMMARY_FILE")"
+  if [[ -n "$driver_manifest_summary_file" && -f "$driver_manifest_summary_file" ]]; then
+    driver_manifest_summary_json="$(cat "$driver_manifest_summary_file")"
+  else
+    driver_manifest_summary_json="null"
+  fi
 else
   driver_summary_json="null"
+  driver_manifest_summary_json="null"
 fi
 
 jq \
@@ -40,8 +47,11 @@ jq \
   --arg plan_file "$PLAN_FILE" \
   --arg driver_summary_file "$DRIVER_SUMMARY_FILE" \
   --argjson driver_summary "$driver_summary_json" \
+  --argjson driver_manifest_summary "$driver_manifest_summary_json" \
   '
     def unique_sorted: unique | sort;
+    def intersect($other):
+      map(select(. as $value | ($other | index($value)) != null));
     def horizon_order:
       if . == "1h" then 1
       elif . == "4h" then 2
@@ -103,6 +113,8 @@ jq \
 
     (.horizon_rows // []) as $rows
     | ($driver_summary // {}) as $driver
+    | ($driver_manifest_summary // {}) as $manifest_summary
+    | ($driver.manifest.latest_universe // $manifest_summary.latest_universe // {}) as $latest_universe
     | {
         schema_version:"research_horizon_status_checkpoint_v1",
         generated_at:$generated_at,
@@ -231,6 +243,56 @@ jq \
               else empty end,
             "do_not_enable_live_from_research_batch"
           ]
+        }
+      }
+    | (.horizon_summary.symbols // []) as $candidate_symbols
+    | ($latest_universe.observed_symbols // []) as $observed_symbols
+    | ($latest_universe.approved_symbols // []) as $approved_symbols
+    | ($candidate_symbols | intersect($approved_symbols)) as $candidate_symbols_in_approved_universe
+    | ($rows | map(select((.replay_run_count // 0) > 0) | .primary_symbol) | unique_sorted) as $research_replayed_symbols
+    | ($rows | map(select(.next_action == "promotion_gate_ready_for_review") | .primary_symbol) | unique_sorted) as $promotion_ready_symbols
+    | ($rows | map(select(any((.gate_biases // [])[]?; startswith("PROMOTE"))) | .primary_symbol) | unique_sorted) as $promoted_symbols
+    | . + {
+        verdict:.next_decision.verdict,
+        selected_symbols:$candidate_symbols,
+        next_action_counts:.horizon_summary.next_action_counts,
+        major50_state:{
+          universe_mode:($driver.manifest.universe_mode // null),
+          latest_universe_present:($latest_universe.present // null),
+          observed_symbol_count:($latest_universe.observed_symbol_count // ($observed_symbols | length)),
+          approved_symbol_count:($latest_universe.approved_symbol_count // ($approved_symbols | length)),
+          excluded_symbol_count:($latest_universe.excluded_symbol_count // null),
+          candidate_symbol_count:($candidate_symbols | length),
+          candidate_symbols:$candidate_symbols,
+          candidate_symbols_in_approved_universe:$candidate_symbols_in_approved_universe,
+          approved_symbols_without_selected_candidate:($approved_symbols - $candidate_symbols),
+          selected_symbols_not_in_approved_universe:(
+            if ($approved_symbols | length) == 0 then []
+            else ($candidate_symbols - $approved_symbols)
+            end
+          ),
+          candidate_symbol_coverage_of_approved_universe:(
+            if ($approved_symbols | length) == 0 then null
+            else (($candidate_symbols_in_approved_universe | length) / ($approved_symbols | length))
+            end
+          )
+        },
+        research_factory_progression:{
+          major50_observed_symbol_count:($latest_universe.observed_symbol_count // ($observed_symbols | length)),
+          major50_approved_symbol_count:($latest_universe.approved_symbol_count // ($approved_symbols | length)),
+          candidate_generated_symbol_count:($candidate_symbols | length),
+          research_replayed_symbol_count:($research_replayed_symbols | length),
+          promotion_ready_symbol_count:($promotion_ready_symbols | length),
+          promoted_symbol_count:($promoted_symbols | length),
+          shadow_created:((.stage_state.shadow_created // false) == true),
+          paper_created:((.stage_state.paper_created // false) == true),
+          live_enabled:false,
+          symbols:{
+            candidate_generated:$candidate_symbols,
+            research_replayed:$research_replayed_symbols,
+            promotion_ready:$promotion_ready_symbols,
+            promoted:$promoted_symbols
+          }
         }
       }
   ' "$PLAN_FILE"
