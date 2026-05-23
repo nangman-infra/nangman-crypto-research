@@ -102,6 +102,47 @@ It also discovers later Market-L1 15-minute replay windows from the candidate's
 native replay can progress after new post-decision market data lands without
 manually wiring every delta/context key.
 
+## Current-Approved Batch Driver
+
+Use the current-approved batch driver when candidates exist but the dispatcher
+is still in `dry_run`. It closes the local validation loop:
+
+```text
+build current-approved manifest
+  -> run local research replay
+  -> summarize research report
+  -> build retest horizon plan
+  -> write one driver summary
+```
+
+```bash
+cd /Volumes/WD/Developments/nangman-crypto/apps/research-app
+
+AWS_PROFILE=<sso-profile> \
+AWS_REGION=ap-northeast-2 \
+scripts/run-current-approved-research-batch.sh
+```
+
+The driver discovers the Market-L1 bucket from the research ECS task definition
+unless `RESEARCH_MARKET_L1_S3_BUCKET` is set. Outputs are written under
+`/tmp/nangman-crypto/research-current-approved-batch/<run-id>/` by default.
+Override with absolute paths only:
+
+```bash
+RESEARCH_BATCH_DRIVER_ROOT=/tmp/nangman-crypto/research-current-approved-batch \
+RESEARCH_BATCH_DRIVER_RUN_ID=research_batch_YYYYMMDDTHHMMSSZ \
+scripts/run-current-approved-research-batch.sh
+```
+
+The driver is local-output only. It does not upload reports, start ECS tasks,
+switch the dispatcher, or create shadow/paper/live artifacts. It refuses
+non-`current_approved` universe modes unless
+`RESEARCH_BATCH_DRIVER_ALLOW_NON_APPROVED_UNIVERSE=true` is explicitly set for a
+diagnostic run. When `AWS_PROFILE` is set and static environment credentials are
+absent, it exports short-lived CLI-resolved credentials into the child process
+environment so the Rust AWS SDK reads the same authenticated session as the AWS
+CLI. The temporary credential file is removed before research replay starts.
+
 ECS input/output environment:
 
 ```text
