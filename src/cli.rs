@@ -1198,14 +1198,15 @@ async fn market_feature_delta_s3_keys(
             keys.insert(format!("market_feature_delta/run_id={run_id}/delta.json"));
         }
     }
-    for key in discover_latest_market_feature_delta_keys_from_s3(
-        market_l1_s3_bucket(args),
-        &market_l1_replay_window_starts(bundles, args.now_ms.unwrap_or_else(now_ms)),
-    )
-    .await?
-    {
-        insert_normalized_s3_key(&mut keys, &key);
-    }
+    keys.extend(
+        discover_latest_market_feature_delta_keys_from_s3(
+            market_l1_s3_bucket(args),
+            &market_l1_replay_window_starts(bundles, args.now_ms.unwrap_or_else(now_ms)),
+        )
+        .await?
+        .into_iter()
+        .filter_map(|key| normalize_s3_key(&key)),
+    );
     Ok(keys.into_iter().collect())
 }
 
@@ -1236,14 +1237,15 @@ async fn market_regime_context_s3_keys(
             ));
         }
     }
-    for key in discover_latest_market_regime_context_keys_from_s3(
-        market_l1_s3_bucket(args),
-        &market_l1_replay_window_starts(bundles, args.now_ms.unwrap_or_else(now_ms)),
-    )
-    .await?
-    {
-        insert_normalized_s3_key(&mut keys, &key);
-    }
+    keys.extend(
+        discover_latest_market_regime_context_keys_from_s3(
+            market_l1_s3_bucket(args),
+            &market_l1_replay_window_starts(bundles, args.now_ms.unwrap_or_else(now_ms)),
+        )
+        .await?
+        .into_iter()
+        .filter_map(|key| normalize_s3_key(&key)),
+    );
     Ok(keys.into_iter().collect())
 }
 
