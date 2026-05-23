@@ -32,6 +32,20 @@ aws_cmd() {
   aws --region "$REGION" "$@"
 }
 
+verify_aws_access() {
+  local identity_output
+  if ! identity_output="$(aws_cmd sts get-caller-identity --output json 2>&1)"; then
+    {
+      echo "AWS credentials unavailable or expired for region=$REGION"
+      echo "Refresh the AWS login/session, then rerun this check."
+      echo "$identity_output"
+    } | redact >&2
+    exit 1
+  fi
+
+  echo "aws identity ok: account=$(jq -r '.Account' <<<"$identity_output" | redact)"
+}
+
 latest_object_json() {
   local bucket="$1"
   local prefix="$2"
@@ -106,6 +120,8 @@ echo "task_definition=$TASK_DEFINITION"
 echo "expected_dispatch_mode=$EXPECTED_DISPATCH_MODE"
 echo "verify_fresh_output=$VERIFY_FRESH_OUTPUT"
 echo
+
+verify_aws_access
 
 lambda_json="$(mktemp)"
 task_json="$(mktemp)"

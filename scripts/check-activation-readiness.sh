@@ -31,6 +31,20 @@ aws_cmd() {
   aws --region "$REGION" "$@"
 }
 
+verify_aws_access() {
+  local identity_output
+  if ! identity_output="$(aws_cmd sts get-caller-identity --output json 2>&1)"; then
+    {
+      echo "AWS credentials unavailable or expired for region=$REGION"
+      echo "Refresh the AWS login/session, then rerun this check."
+      echo "$identity_output"
+    } | redact >&2
+    exit 1
+  fi
+
+  echo "aws identity ok: account=$(jq -r '.Account' <<<"$identity_output" | redact)"
+}
+
 require_command aws
 require_command jq
 require_command sed
@@ -42,6 +56,8 @@ echo "dispatcher=$DISPATCHER_FUNCTION"
 echo "cluster=$CLUSTER_NAME"
 echo "task_definition=$TASK_DEFINITION"
 echo
+
+verify_aws_access
 
 lambda_json="$(mktemp)"
 task_json="$(mktemp)"
