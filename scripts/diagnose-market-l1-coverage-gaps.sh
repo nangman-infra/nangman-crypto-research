@@ -18,6 +18,20 @@ require_command() {
   fi
 }
 
+redact() {
+  sed -E \
+    -e 's/nangman-crypto-dev-[A-Za-z0-9-]+-[0-9]{6}/nangman-crypto-dev-<bucket-family>-<account-suffix>/g' \
+    -e 's/[0-9]{12}\.dkr\.ecr/<aws-account-id>.dkr.ecr/g' \
+    -e 's/account=[0-9]{12}/account=<aws-account-id>/g' \
+    -e 's/"Account"[[:space:]]*:[[:space:]]*"[0-9]{12}"/"Account":"<aws-account-id>"/g' \
+    -e 's/[0-9]{12}/<aws-account-id>/g' \
+    -e 's#arn:aws:iam::[^[:space:]"]+#arn:aws:iam::<aws-account-id>:<resource>#g' \
+    -e 's#arn:aws:ecs:[^[:space:]"]+#arn:aws:ecs:<region>:<aws-account-id>:<resource>#g' \
+    -e 's#arn:aws:lambda:[^[:space:]"]+#arn:aws:lambda:<region>:<aws-account-id>:<resource>#g' \
+    -e 's/subnet-[A-Za-z0-9]+/<subnet-id>/g' \
+    -e 's/sg-[A-Za-z0-9]+/<security-group-id>/g'
+}
+
 require_absolute_file() {
   local name="$1"
   local path="$2"
@@ -46,6 +60,20 @@ normalize_bool() {
 
 aws_cmd() {
   aws --region "$REGION" "$@"
+}
+
+verify_aws_access() {
+  local identity_output
+  if ! identity_output="$(aws_cmd sts get-caller-identity --output json 2>&1)"; then
+    {
+      echo "AWS credentials unavailable or expired for region=$REGION"
+      echo "Refresh the AWS login/session, then rerun this check."
+      echo "$identity_output"
+    } | redact >&2
+    exit 1
+  fi
+
+  echo "aws identity ok: account=$(jq -r '.Account' <<<"$identity_output")" | redact >&2
 }
 
 latest_direct_key_for_window() {
@@ -184,10 +212,12 @@ if [[ -n "$REPLAY_RUN_FILE" ]]; then
 fi
 if [[ "$check_s3_normalized" == "true" ]]; then
   require_command aws
+  require_command sed
   if [[ -z "$MARKET_L1_BUCKET" || "$MARKET_L1_BUCKET" == *"<"* || "$MARKET_L1_BUCKET" == *">"* ]]; then
     echo "RESEARCH_MARKET_L1_S3_BUCKET or MARKET_L1_BUCKET must be set to a real bucket for S3 checks" >&2
     exit 1
   fi
+  verify_aws_access
 fi
 
 tmp_dir="$(mktemp -d)"

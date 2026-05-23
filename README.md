@@ -398,6 +398,9 @@ the current missing replay windows are discoverable through either direct
 `l1_index -> manifest -> market_feature_delta_key / market_regime_context_key`
 path:
 
+S3 mode verifies the AWS STS session first. Missing or expired credentials fail
+before the script classifies Market-L1 coverage.
+
 ```bash
 AWS_PROFILE=<sso-profile> \
 AWS_REGION=ap-northeast-2 \
