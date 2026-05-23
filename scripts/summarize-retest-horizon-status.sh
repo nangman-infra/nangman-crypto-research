@@ -65,6 +65,7 @@ jq \
           candidate_count:(map(.candidate_id) | unique | length),
           next_action_counts:action_counts,
           waiting_for_market_l1_count:count_action("wait_for_market_l1_horizon"),
+          market_l1_coverage_extension_count:count_action("extend_market_l1_horizon_coverage"),
           ready_for_replay_count:(
             count_action("run_research_replay_for_horizon")
             + count_action("materialize_completed_native_replay_sample")
@@ -148,6 +149,7 @@ jq \
             + ($rows | count_action("materialize_completed_native_replay_sample"))
           ),
           waiting_for_market_l1_count:($rows | count_action("wait_for_market_l1_horizon")),
+          market_l1_coverage_extension_count:($rows | count_action("extend_market_l1_horizon_coverage")),
           sample_accumulation_count:($rows | count_action("accumulate_completed_native_replay_samples")),
           promotion_ready_for_review_count:($rows | count_action("promotion_gate_ready_for_review"))
         },
@@ -166,6 +168,7 @@ jq \
                 + count_action("materialize_completed_native_replay_sample")
               ),
               waiting_for_market_l1_count:count_action("wait_for_market_l1_horizon"),
+              market_l1_coverage_extension_count:count_action("extend_market_l1_horizon_coverage"),
               sample_accumulation_count:count_action("accumulate_completed_native_replay_samples"),
               promotion_ready_for_review_count:count_action("promotion_gate_ready_for_review"),
               candidates:(
@@ -187,6 +190,7 @@ jq \
           verdict:(
             if (($driver.stage_state.promotion_passed // false) == true) then "PROMOTE_PRESENT_REVIEW_BEFORE_SHADOW"
             elif ($rows | count_action("promotion_gate_ready_for_review")) > 0 then "PROMOTION_GATE_READY_FOR_REVIEW"
+            elif ($rows | count_action("extend_market_l1_horizon_coverage")) > 0 then "EXTEND_MARKET_L1_HORIZON_COVERAGE"
             elif (
               (($rows | count_action("run_research_replay_for_horizon"))
               + ($rows | count_action("materialize_completed_native_replay_sample"))) > 0
@@ -201,6 +205,9 @@ jq \
               else empty end,
             if (($rows | count_action("promotion_gate_ready_for_review")) > 0)
               then "review_promotion_gate_ready_horizons"
+              else empty end,
+            if (($rows | count_action("extend_market_l1_horizon_coverage")) > 0)
+              then "extend_market_l1_horizon_coverage"
               else empty end,
             if (
               (($rows | count_action("run_research_replay_for_horizon"))

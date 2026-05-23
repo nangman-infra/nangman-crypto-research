@@ -251,6 +251,7 @@ jq -r '
   "horizon_count=\(.summary.horizon_count)",
   "ready_for_replay_count=\(.summary.ready_for_replay_count)",
   "waiting_for_market_l1_count=\(.summary.waiting_for_market_l1_count)",
+  "market_l1_coverage_extension_count=\(.summary.market_l1_coverage_extension_count)",
   "sample_accumulation_count=\(.summary.sample_accumulation_count)",
   "promotion_ready_for_review_count=\(.summary.promotion_ready_for_review_count)",
   "next_action_counts=\(.summary.next_action_counts | map(.next_action + ":" + (.count|tostring)) | join(","))"
@@ -330,6 +331,7 @@ jq -r '
   "candidate_count=\(.horizon_summary.candidate_count)",
   "horizon_count=\(.horizon_summary.horizon_count)",
   "symbols=\(.horizon_summary.symbols | join(","))",
+  "market_l1_coverage_extension_count=\(.horizon_summary.market_l1_coverage_extension_count)",
   "next_action_counts=\(.horizon_summary.next_action_counts | map(.next_action + ":" + (.count|tostring)) | join(","))",
   "blocked_actions=\(.next_decision.blocked_actions | join(","))"
 ' "$RETEST_HORIZON_STATUS_OUTPUT" | redact

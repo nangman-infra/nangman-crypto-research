@@ -163,7 +163,15 @@ jq \
         | ($bundle.validation_requirements.include_liquidity_filter // false) as $liquidity_required
         | ($matched | map(.train_validation_split_summary.materialized // false) | any_true) as $split_materialized
         | ($matched | map(.liquidity_filter_materialized_count // 0) | max_or_zero) as $liquidity_materialized
-        | ($matched | map(.gate_reason_codes // []) | add | unique_sorted) as $reason_codes
+        | ($matched | map(.gate_reason_codes // []) | add | unique_sorted) as $aggregate_reason_codes
+        | (
+            ($report.summary_findings // [])
+            | map(select(.candidate_id == $bundle.candidate_id))
+            | map(.reason_codes // [])
+            | add
+            | unique_sorted
+          ) as $finding_reason_codes
+        | (($aggregate_reason_codes + $finding_reason_codes) | unique_sorted) as $reason_codes
         | {
             candidate_id:$bundle.candidate_id,
             candidate_lifecycle_key:$bundle.candidate_lifecycle_key,
@@ -204,6 +212,10 @@ jq \
               elif $latest_l1 == null then "discover_latest_market_l1_as_of"
               elif $latest_l1 < $due_ms then "wait_for_market_l1_horizon"
               elif ($matched | length) == 0 then "run_research_replay_for_horizon"
+              elif (
+                ($reason_codes | index("missing_native_replay_market_data")) != null
+                or ($reason_codes | index("native_replay_horizon_not_materialized")) != null
+              ) then "extend_market_l1_horizon_coverage"
               elif $completed == 0 then "materialize_completed_native_replay_sample"
               elif $completed < $min_completed then "accumulate_completed_native_replay_samples"
               elif $unseen < $required_unseen then "materialize_unseen_replay_windows"
@@ -239,6 +251,11 @@ jq \
           waiting_for_market_l1_count:(
             $horizon_rows
             | map(select(.next_action == "wait_for_market_l1_horizon"))
+            | length
+          ),
+          market_l1_coverage_extension_count:(
+            $horizon_rows
+            | map(select(.next_action == "extend_market_l1_horizon_coverage"))
             | length
           ),
           sample_accumulation_count:(

@@ -315,6 +315,7 @@ The output separates:
 - wait_for_market_l1_horizon
 - run_research_replay_for_horizon
 - materialize_completed_native_replay_sample
+- extend_market_l1_horizon_coverage
 - accumulate_completed_native_replay_samples
 - materialize_unseen_replay_windows
 - materialize_train_validation_split
@@ -342,7 +343,7 @@ The checkpoint separates:
 - stage_state: candidate_generated, research_replay_completed, promotion_passed, shadow_created, paper_created, live_enabled
 - batch_state: selected candidates, replay count, RETEST/PROMOTE surface
 - by_symbol: per-symbol candidate and horizon status
-- by_horizon: 1h/4h/24h action counts
+- by_horizon: 1h/4h/24h action counts, including market coverage extension needs
 - next_decision: safe next actions and blocked shadow/paper/live actions
 ```
 
@@ -376,6 +377,10 @@ run_research_replay_for_horizon
 materialize_completed_native_replay_sample
 ```
 
+Horizons classified as `extend_market_l1_horizon_coverage` are intentionally not
+selected by default, because repeating research before the missing Market-L1
+coverage is materialized will keep producing `missing_native_replay_market_data`.
+
 Override with `RESEARCH_FOCUS_NEXT_ACTIONS=action_a,action_b`. The script is
 local-manifest only. By default it excludes historical replay index refs so a
 small focused run does not pull unrelated historical aggregates into the
@@ -383,6 +388,9 @@ checkpoint. Set `RESEARCH_FOCUS_INCLUDE_HISTORICAL_INDEX_REFS=true` only when
 the focused manifest is meant to reuse the source manifest's full historical
 evidence surface. The script does not fetch candidate bundles, upload reports,
 start ECS tasks, switch the dispatcher, or create shadow/paper/live artifacts.
+If no horizons match the requested actions, it writes an empty manifest and
+summary, reports `selected_candidate_bundle_ref_count=0`, and exits non-zero so
+operators do not accidentally treat an empty focused run as replay evidence.
 
 ## Post-Activation Runtime Check
 
