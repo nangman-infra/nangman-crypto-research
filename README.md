@@ -148,6 +148,42 @@ Only after this passes and research output upload is explicitly approved should
 operators switch `RESEARCH_DISPATCH_MODE=run_task` or run an output-enabled
 one-shot ECS task.
 
+## Post-Activation Runtime Check
+
+After an approved output-enabled run or dispatcher activation, verify the
+runtime artifacts with:
+
+```bash
+cd /Volumes/WD/Developments/nangman-crypto/apps/research-app
+
+AWS_PROFILE=<sso-profile> \
+AWS_REGION=ap-northeast-2 \
+RESEARCH_EXPECTED_DISPATCH_MODE=run_task \
+RESEARCH_OUTPUT_MIN_LAST_MODIFIED=YYYY-MM-DDTHH:MM:SS+00:00 \
+scripts/check-post-activation-runtime.sh
+```
+
+The post-activation check verifies:
+
+```text
+- dispatcher Lambda is Active and in the expected mode
+- latest task definition is ACTIVE, ARM64, Linux, readonly root filesystem
+- task definition has research output bucket and historical replay index prefix
+- latest research-run-report, replay-run, and replay-run-index are present
+- optional shadow-validation-run and paper-trade-run freshness is reported
+- research_run_report_v1 sample has candidate ids, replay ids, aggregate fields, and gate policy
+```
+
+For pre-activation dry checks, keep freshness disabled:
+
+```bash
+AWS_PROFILE=<sso-profile> \
+AWS_REGION=ap-northeast-2 \
+RESEARCH_EXPECTED_DISPATCH_MODE=dry_run \
+RESEARCH_VERIFY_FRESH_OUTPUT=false \
+scripts/check-post-activation-runtime.sh
+```
+
 ## V0 Boundaries
 
 ```text
