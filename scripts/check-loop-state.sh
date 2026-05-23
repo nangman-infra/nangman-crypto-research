@@ -76,6 +76,53 @@ latest_object_json() {
     '
 }
 
+latest_universe_snapshot_object_json() {
+  local bucket="$1"
+  local prefix="$2"
+  aws_cmd s3api list-objects-v2 \
+    --bucket "$bucket" \
+    --prefix "$prefix" \
+    --output json \
+  | jq -c --arg prefix "$prefix" '
+      def with_run_id_times:
+        . as $object
+        | ($object.Key | capture("run_id=l1_(?<start>[0-9]+)_(?<end>[0-9]+)_(?<generated>[0-9]+)")? // {}) as $run
+        | $object + {
+            run_start_ms:(($run.start // "0") | tonumber),
+            run_end_ms:(($run.end // "0") | tonumber),
+            run_generated_ms:(($run.generated // "0") | tonumber)
+          };
+
+      (.Contents // [])
+      | map(with_run_id_times)
+      | sort_by(.run_end_ms, .LastModified, .Key)
+      | last as $last
+      | if $last == null then
+          {
+            prefix:$prefix,
+            selection:"latest_universe_as_of",
+            lastModified:null,
+            size:null,
+            key:null,
+            run_start_ms:null,
+            run_end_ms:null,
+            run_generated_ms:null
+          }
+        else
+          {
+            prefix:$prefix,
+            selection:"latest_universe_as_of",
+            lastModified:$last.LastModified,
+            size:$last.Size,
+            key:$last.Key,
+            run_start_ms:$last.run_start_ms,
+            run_end_ms:$last.run_end_ms,
+            run_generated_ms:$last.run_generated_ms
+          }
+        end
+    '
+}
+
 require_command aws
 require_command jq
 require_command sed
@@ -164,15 +211,14 @@ runtime_summary="$(jq -n -c \
     )
   }')"
 
-universe_object="$(latest_object_json "$market_l1_bucket" "symbol_universe_snapshot/run_id=")"
+universe_object="$(latest_universe_snapshot_object_json "$market_l1_bucket" "symbol_universe_snapshot/run_id=")"
 universe_key="$(jq -r '.key // empty' <<<"$universe_object")"
 if [[ -n "$universe_key" ]]; then
   universe_summary="$(
     aws_cmd s3 cp "s3://${market_l1_bucket}/${universe_key}" - \
     | jq -c \
       --argjson expected "$EXPECTED_MAJOR_UNIVERSE_SIZE" \
-      --arg key "$universe_key" \
-      --arg last_modified "$(jq -r '.lastModified' <<<"$universe_object")" '
+      --argjson object "$universe_object" '
         def members: ((.included_symbols // []) + (.excluded_symbols // []));
         def top_reasons:
           [(.excluded_symbols // [])[]?.status_reason]
@@ -183,8 +229,12 @@ if [[ -n "$universe_key" ]]; then
           | .[0:5];
         {
           present:true,
-          key:$key,
-          last_modified:$last_modified,
+          key:$object.key,
+          last_modified:$object.lastModified,
+          selection:$object.selection,
+          run_start_ms:$object.run_start_ms,
+          run_end_ms:$object.run_end_ms,
+          run_generated_ms:$object.run_generated_ms,
           schema_version,
           symbol_universe_snapshot_id,
           universe_as_of_ms,
