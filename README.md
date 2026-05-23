@@ -69,6 +69,23 @@ Batch manifest input:
 }
 ```
 
+Build a local batch manifest from recent S3 candidate bundles before enabling
+the dispatcher:
+
+```bash
+cd /Volumes/WD/Developments/nangman-crypto/apps/research-app
+
+AWS_PROFILE=<sso-profile> \
+AWS_REGION=ap-northeast-2 \
+scripts/build-research-batch-manifest.sh
+```
+
+The builder is local-only. It reads recent `candidate-evidence-bundle/` objects,
+adds recent `replay-run-index/` references for historical evidence, writes a
+local `research_input_manifest_v1`, and prints a local validation command. It
+does not upload the manifest, start ECS, switch the dispatcher, or create S3
+research/shadow/paper outputs.
+
 In ECS, market replay inputs are loaded from Market-L1 S3. The app first uses
 `selected_market_artifacts[].artifact_key` from the candidate bundle, then falls
 back to the sibling keys derived from `market_data_quality_summary/run_id=...`.
