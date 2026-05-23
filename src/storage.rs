@@ -135,6 +135,40 @@ pub async fn read_replay_run_index_records_from_s3(
     Ok(records)
 }
 
+pub async fn discover_replay_run_index_keys_from_s3(
+    bucket: &str,
+    prefix: &str,
+    read_limit: usize,
+    scan_limit: usize,
+) -> AppResult<Vec<String>> {
+    if bucket.trim().is_empty() {
+        return Err(AppError::config(
+            "historical replay-run-index S3 bucket must not be empty",
+        ));
+    }
+    if prefix.trim().is_empty() {
+        return Err(AppError::config(
+            "historical replay-run-index S3 prefix must not be empty",
+        ));
+    }
+    if read_limit == 0 {
+        return Err(AppError::config(
+            "historical replay-run-index S3 read limit must be greater than zero",
+        ));
+    }
+    if scan_limit == 0 {
+        return Err(AppError::config(
+            "historical replay-run-index S3 scan limit must be greater than zero",
+        ));
+    }
+
+    let client = s3_client().await;
+    let objects =
+        list_payload_objects_with_prefix(&client, bucket, prefix, "/part-000001.jsonl", scan_limit)
+            .await?;
+    Ok(select_latest_payload_keys(objects, read_limit))
+}
+
 pub async fn read_oss_adapter_runs_from_s3(
     bucket: &str,
     keys: &[String],
@@ -451,6 +485,81 @@ async fn latest_key_with_prefix(
     Ok(latest)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ListedPayloadObject {
+    key: String,
+    last_modified_ms: i64,
+}
+
+async fn list_payload_objects_with_prefix(
+    client: &Client,
+    bucket: &str,
+    prefix: &str,
+    file_suffix: &str,
+    scan_limit: usize,
+) -> AppResult<Vec<ListedPayloadObject>> {
+    let mut objects = Vec::new();
+    let mut continuation_token: Option<String> = None;
+
+    loop {
+        let mut request = client.list_objects_v2().bucket(bucket).prefix(prefix);
+        if let Some(token) = continuation_token.as_deref() {
+            request = request.continuation_token(token);
+        }
+        let output = request.send().await.map_err(|error| {
+            AppError::Aws(format!(
+                "s3 list_objects_v2 s3://{bucket}/{prefix}: {}",
+                aws_error_detail(&error)
+            ))
+        })?;
+
+        for object in output.contents() {
+            let Some(key) = object.key() else {
+                continue;
+            };
+            if !key.ends_with(file_suffix) {
+                continue;
+            }
+            objects.push(ListedPayloadObject {
+                key: key.to_owned(),
+                last_modified_ms: object
+                    .last_modified()
+                    .and_then(|last_modified| last_modified.to_millis().ok())
+                    .unwrap_or(0),
+            });
+            if objects.len() > scan_limit {
+                return Err(AppError::validation(format!(
+                    "historical replay-run-index S3 scan limit exceeded for s3://{bucket}/{prefix}: limit={scan_limit}; narrow the prefix"
+                )));
+            }
+        }
+
+        continuation_token = output.next_continuation_token().map(ToOwned::to_owned);
+        if continuation_token.is_none() {
+            break;
+        }
+    }
+
+    Ok(objects)
+}
+
+fn select_latest_payload_keys(
+    mut objects: Vec<ListedPayloadObject>,
+    read_limit: usize,
+) -> Vec<String> {
+    objects.sort_by(|left, right| {
+        right
+            .last_modified_ms
+            .cmp(&left.last_modified_ms)
+            .then_with(|| right.key.cmp(&left.key))
+    });
+    objects
+        .into_iter()
+        .take(read_limit)
+        .map(|object| object.key)
+        .collect()
+}
+
 async fn get_object_bytes(client: &Client, bucket: &str, key: &str) -> AppResult<Vec<u8>> {
     validate_s3_location(bucket, key, "S3")?;
     let output = client
@@ -637,5 +746,34 @@ mod tests {
         let error = AppError::Aws("AccessDenied".to_owned());
 
         assert!(!is_missing_market_artifact(&error));
+    }
+
+    #[test]
+    fn latest_payload_key_selection_prefers_recent_jsonl_parts() {
+        let keys = select_latest_payload_keys(
+            vec![
+                ListedPayloadObject {
+                    key: "replay-run-index/schema=x/dt=2026-05-22/part-000001.jsonl".to_owned(),
+                    last_modified_ms: 100,
+                },
+                ListedPayloadObject {
+                    key: "replay-run-index/schema=x/dt=2026-05-23/part-000001.jsonl".to_owned(),
+                    last_modified_ms: 300,
+                },
+                ListedPayloadObject {
+                    key: "replay-run-index/schema=x/dt=2026-05-21/part-000001.jsonl".to_owned(),
+                    last_modified_ms: 200,
+                },
+            ],
+            2,
+        );
+
+        assert_eq!(
+            keys,
+            vec![
+                "replay-run-index/schema=x/dt=2026-05-23/part-000001.jsonl",
+                "replay-run-index/schema=x/dt=2026-05-21/part-000001.jsonl",
+            ]
+        );
     }
 }

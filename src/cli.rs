@@ -17,9 +17,10 @@ use crate::replay::{build_invalid_replay_run, run_native_replay};
 use crate::report::build_report;
 use crate::storage::{
     discover_latest_market_feature_delta_keys_from_s3,
-    discover_latest_market_regime_context_keys_from_s3, read_candidate_bundles_from_s3,
-    read_market_feature_deltas_from_s3, read_market_regime_contexts_from_s3,
-    read_oss_adapter_runs_from_s3, read_replay_run_index_records_from_s3, read_replay_runs_from_s3,
+    discover_latest_market_regime_context_keys_from_s3, discover_replay_run_index_keys_from_s3,
+    read_candidate_bundles_from_s3, read_market_feature_deltas_from_s3,
+    read_market_regime_contexts_from_s3, read_oss_adapter_runs_from_s3,
+    read_replay_run_index_records_from_s3, read_replay_runs_from_s3,
     read_research_input_manifest_from_s3, read_shadow_validation_runs_from_s3,
     write_research_outputs_to_s3,
 };
@@ -34,6 +35,8 @@ const MARKET_FEATURE_DELTA_ARTIFACT_TYPE: &str = "market_feature_delta";
 const MARKET_FEATURE_DELTA_SUMMARY_ARTIFACT_TYPE: &str = "market_feature_delta_summary";
 const MARKET_REGIME_CONTEXT_ARTIFACT_TYPE: &str = "market_regime_context";
 const MARKET_L1_REPLAY_WINDOW_MS: i64 = 15 * 60 * 1000;
+const DEFAULT_HISTORICAL_REPLAY_RUN_INDEX_READ_LIMIT: usize = 20;
+const DEFAULT_HISTORICAL_REPLAY_RUN_INDEX_SCAN_LIMIT: usize = 1_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Args {
@@ -418,7 +421,12 @@ pub async fn run(args: Args) -> AppResult<RunSummary> {
         budget.max_market_artifact_ref_count,
     )
     .await?;
-    let historical_replay_runs = load_historical_replay_runs(&args, manifest.as_ref()).await?;
+    let historical_replay_runs = load_historical_replay_runs(
+        &args,
+        manifest.as_ref(),
+        budget.max_historical_replay_run_ref_count,
+    )
+    .await?;
     let oss_adapter_runs = load_oss_adapter_runs(&args, manifest.as_ref()).await?;
     let completed_shadow_validation_runs =
         load_shadow_validation_runs(&args, manifest.as_ref()).await?;
@@ -754,6 +762,7 @@ async fn load_regime_contexts(
 async fn load_historical_replay_runs(
     args: &Args,
     manifest: Option<&ResearchInputManifest>,
+    max_historical_replay_run_ref_count: usize,
 ) -> AppResult<Vec<ReplayRun>> {
     let mut replay_runs = Vec::new();
     for path in &args.historical_replay_run_files {
@@ -779,7 +788,12 @@ async fn load_historical_replay_runs(
             read_replay_runs_from_s3(bucket, &args.historical_replay_run_s3_keys).await?,
         );
     }
-    let index_records = load_historical_replay_run_index_records(args, manifest).await?;
+    let index_records = load_historical_replay_run_index_records(
+        args,
+        manifest,
+        max_historical_replay_run_ref_count,
+    )
+    .await?;
     append_unique_replay_runs(
         &mut replay_runs,
         load_replay_runs_from_index_records(&index_records).await?,
@@ -790,6 +804,7 @@ async fn load_historical_replay_runs(
 async fn load_historical_replay_run_index_records(
     args: &Args,
     manifest: Option<&ResearchInputManifest>,
+    max_historical_replay_run_ref_count: usize,
 ) -> AppResult<Vec<ReplayRunIndexRecord>> {
     let mut records = Vec::new();
     for path in &args.historical_replay_run_index_files {
@@ -814,6 +829,33 @@ async fn load_historical_replay_run_index_records(
             )
             .await?,
         );
+    }
+    if let Some(prefix) = env_string("RESEARCH_HISTORICAL_REPLAY_RUN_INDEX_S3_PREFIX") {
+        let bucket = args
+            .historical_replay_run_index_s3_bucket
+            .as_deref()
+            .or(args.output_s3_bucket.as_deref())
+            .ok_or_else(|| {
+                AppError::config(
+                    "RESEARCH_HISTORICAL_REPLAY_RUN_INDEX_S3_BUCKET or RESEARCH_OUTPUT_S3_BUCKET is required when RESEARCH_HISTORICAL_REPLAY_RUN_INDEX_S3_PREFIX is set",
+                )
+            })?;
+        let read_limit = env_usize(
+            "RESEARCH_HISTORICAL_REPLAY_RUN_INDEX_S3_READ_LIMIT",
+            DEFAULT_HISTORICAL_REPLAY_RUN_INDEX_READ_LIMIT,
+        )?;
+        let scan_limit = env_usize(
+            "RESEARCH_HISTORICAL_REPLAY_RUN_INDEX_S3_SCAN_LIMIT",
+            DEFAULT_HISTORICAL_REPLAY_RUN_INDEX_SCAN_LIMIT,
+        )?;
+        let discovered_keys =
+            discover_replay_run_index_keys_from_s3(bucket, &prefix, read_limit, scan_limit).await?;
+        enforce_budget(
+            "historical_replay_run_index_s3_prefix_key_count",
+            discovered_keys.len(),
+            max_historical_replay_run_ref_count,
+        )?;
+        records.extend(read_replay_run_index_records_from_s3(bucket, &discovered_keys).await?);
     }
     Ok(records)
 }
@@ -1406,6 +1448,21 @@ fn env_string(name: &str) -> Option<String> {
     env::var(name).ok().filter(|value| !value.trim().is_empty())
 }
 
+fn env_usize(name: &str, fallback: usize) -> AppResult<usize> {
+    let Some(raw) = env_string(name) else {
+        return Ok(fallback);
+    };
+    let value = raw
+        .parse::<usize>()
+        .map_err(|_| AppError::config(format!("{name} must be a positive integer")))?;
+    if value == 0 {
+        return Err(AppError::config(format!(
+            "{name} must be greater than zero"
+        )));
+    }
+    Ok(value)
+}
+
 fn env_list(name: &str) -> Vec<String> {
     env::var(name)
         .ok()
@@ -1457,6 +1514,9 @@ ECS input and output can also come from environment:
   RESEARCH_HISTORICAL_REPLAY_RUN_S3_KEYS
   RESEARCH_HISTORICAL_REPLAY_RUN_INDEX_S3_BUCKET
   RESEARCH_HISTORICAL_REPLAY_RUN_INDEX_S3_KEYS
+  RESEARCH_HISTORICAL_REPLAY_RUN_INDEX_S3_PREFIX
+  RESEARCH_HISTORICAL_REPLAY_RUN_INDEX_S3_READ_LIMIT
+  RESEARCH_HISTORICAL_REPLAY_RUN_INDEX_S3_SCAN_LIMIT
   RESEARCH_SHADOW_VALIDATION_RUN_S3_BUCKET
   RESEARCH_SHADOW_VALIDATION_RUN_S3_KEYS
   RESEARCH_OUTPUT_S3_BUCKET

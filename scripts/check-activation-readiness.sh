@@ -94,6 +94,8 @@ readonly_root="$(jq -r --arg name "$CONTAINER_NAME" '.taskDefinition.containerDe
 image="$(jq -r --arg name "$CONTAINER_NAME" '.taskDefinition.containerDefinitions[] | select(.name == $name) | .image' "$task_json")"
 output_bucket="$(jq -r --arg name "$CONTAINER_NAME" '.taskDefinition.containerDefinitions[] | select(.name == $name) | (.environment // [])[]? | select(.name == "RESEARCH_OUTPUT_S3_BUCKET") | .value' "$task_json")"
 market_l1_bucket="$(jq -r --arg name "$CONTAINER_NAME" '.taskDefinition.containerDefinitions[] | select(.name == $name) | (.environment // [])[]? | select(.name == "RESEARCH_MARKET_L1_S3_BUCKET") | .value' "$task_json")"
+history_index_bucket="$(jq -r --arg name "$CONTAINER_NAME" '.taskDefinition.containerDefinitions[] | select(.name == $name) | (.environment // [])[]? | select(.name == "RESEARCH_HISTORICAL_REPLAY_RUN_INDEX_S3_BUCKET") | .value' "$task_json")"
+history_index_prefix="$(jq -r --arg name "$CONTAINER_NAME" '.taskDefinition.containerDefinitions[] | select(.name == $name) | (.environment // [])[]? | select(.name == "RESEARCH_HISTORICAL_REPLAY_RUN_INDEX_S3_PREFIX") | .value' "$task_json")"
 
 if [[ "$task_status" != "ACTIVE" ]]; then
   echo "task definition is not ACTIVE: $task_status" >&2
@@ -121,6 +123,8 @@ fi
   echo "image=$image"
   echo "output_bucket=$output_bucket"
   echo "market_l1_bucket=$market_l1_bucket"
+  echo "historical_replay_run_index_bucket=${history_index_bucket:-not-configured}"
+  echo "historical_replay_run_index_prefix=${history_index_prefix:-not-configured}"
 } | redact
 
 if [[ -n "${RESEARCH_DRY_RUN_BUCKET:-}" || -n "${RESEARCH_DRY_RUN_KEY:-}" ]]; then

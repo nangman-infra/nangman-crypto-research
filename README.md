@@ -91,9 +91,19 @@ RESEARCH_HISTORICAL_REPLAY_RUN_S3_BUCKET=nangman-crypto-dev-research-<account-su
 RESEARCH_HISTORICAL_REPLAY_RUN_S3_KEYS optional comma-separated replay-run keys
 RESEARCH_HISTORICAL_REPLAY_RUN_INDEX_S3_BUCKET=nangman-crypto-dev-research-<account-suffix>
 RESEARCH_HISTORICAL_REPLAY_RUN_INDEX_S3_KEYS optional comma-separated replay-run-index keys
+RESEARCH_HISTORICAL_REPLAY_RUN_INDEX_S3_PREFIX optional replay-run-index prefix discovery
+RESEARCH_HISTORICAL_REPLAY_RUN_INDEX_S3_READ_LIMIT optional, default 20
+RESEARCH_HISTORICAL_REPLAY_RUN_INDEX_S3_SCAN_LIMIT optional, default 1000
 RESEARCH_OUTPUT_S3_BUCKET=nangman-crypto-dev-research-<account-suffix>
 RESEARCH_OUTPUT_S3_PREFIX optional, default empty
 ```
+
+When `RESEARCH_HISTORICAL_REPLAY_RUN_INDEX_S3_PREFIX` is set, the app discovers
+the latest `replay-run-index/.../part-000001.jsonl` objects under that prefix
+and loads the referenced historical replay samples before running the aggregate
+gate. This lets S3-triggered candidate runs accumulate replay evidence without a
+separate manifest for every dispatch. The discovery path is read-only and is
+bounded by `READ_LIMIT` and `SCAN_LIMIT`.
 
 ECS placement:
 
