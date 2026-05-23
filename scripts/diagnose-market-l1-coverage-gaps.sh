@@ -48,19 +48,31 @@ aws_cmd() {
   aws --region "$REGION" "$@"
 }
 
-latest_delta_key_for_window() {
+latest_direct_key_for_window() {
   local window_start_ms="$1"
+  local family_prefix="$2"
+  local file_suffix="$3"
   aws_cmd s3api list-objects-v2 \
     --bucket "$MARKET_L1_BUCKET" \
-    --prefix "market_feature_delta/run_id=l1_${window_start_ms}_" \
+    --prefix "${family_prefix}/run_id=l1_${window_start_ms}_" \
     --output json \
-  | jq -r '
+  | jq -r --arg file_suffix "$file_suffix" '
       (.Contents // [])
-      | map(select(.Key | endswith("/delta.json")))
+      | map(select(.Key | endswith($file_suffix)))
       | sort_by(.Key)
       | last
       | .Key // empty
     '
+}
+
+latest_delta_key_for_window() {
+  local window_start_ms="$1"
+  latest_direct_key_for_window "$window_start_ms" "market_feature_delta" "/delta.json"
+}
+
+latest_regime_context_key_for_window() {
+  local window_start_ms="$1"
+  latest_direct_key_for_window "$window_start_ms" "market_regime_context" "/context.json"
 }
 
 s3_object_exists() {
@@ -106,17 +118,28 @@ manifest_key_from_l1_index_pointer() {
     done
 }
 
-feature_delta_key_from_l1_manifest() {
+artifact_key_from_l1_manifest() {
   local manifest_key="$1"
+  local manifest_field="$2"
   aws_cmd s3 cp "s3://${MARKET_L1_BUCKET}/${manifest_key}" - \
-  | jq -r '
+  | jq -r --arg manifest_field "$manifest_field" '
       select(.schema_version == "l1_manifest_v1")
       | select((.status // "" | ascii_downcase) == "success")
-      | (.market_feature_delta_key // empty)
+      | (.[$manifest_field] // empty)
     ' \
   | while IFS= read -r key; do
       normalize_s3_key "$key"
     done
+}
+
+feature_delta_key_from_l1_manifest() {
+  local manifest_key="$1"
+  artifact_key_from_l1_manifest "$manifest_key" "market_feature_delta_key"
+}
+
+regime_context_key_from_l1_manifest() {
+  local manifest_key="$1"
+  artifact_key_from_l1_manifest "$manifest_key" "market_regime_context_key"
 }
 
 symbol_delta_count_for_key() {
@@ -311,12 +334,20 @@ if [[ "$check_s3_normalized" == "true" ]]; then
       direct_delta_key_present=true
     fi
 
+    regime_key="$(latest_regime_context_key_for_window "$window_start_ms")"
+    direct_regime_context_key_present=false
+    if [[ -n "$regime_key" ]]; then
+      direct_regime_context_key_present=true
+    fi
+
     index_pointer_key="$(l1_index_pointer_key_for_window "$window_start_ms")"
     index_pointer_present=false
     manifest_key=""
     manifest_present=false
     manifest_delta_key=""
     manifest_delta_key_present=false
+    manifest_regime_context_key=""
+    manifest_regime_context_key_present=false
     if s3_object_exists "$index_pointer_key"; then
       index_pointer_present=true
       manifest_key="$(manifest_key_from_l1_index_pointer "$index_pointer_key" | sed -n '1p')"
@@ -325,6 +356,10 @@ if [[ "$check_s3_normalized" == "true" ]]; then
         manifest_delta_key="$(feature_delta_key_from_l1_manifest "$manifest_key" | sed -n '1p')"
         if [[ -n "$manifest_delta_key" ]] && s3_object_exists "$manifest_delta_key"; then
           manifest_delta_key_present=true
+        fi
+        manifest_regime_context_key="$(regime_context_key_from_l1_manifest "$manifest_key" | sed -n '1p')"
+        if [[ -n "$manifest_regime_context_key" ]] && s3_object_exists "$manifest_regime_context_key"; then
+          manifest_regime_context_key_present=true
         fi
       fi
     fi
@@ -336,31 +371,50 @@ if [[ "$check_s3_normalized" == "true" ]]; then
       discoverable_delta_key_present=true
     fi
 
+    discoverable_regime_context_key="$regime_key"
+    discoverable_regime_context_key_present="$direct_regime_context_key_present"
+    if [[ "$discoverable_regime_context_key_present" != "true" && "$manifest_regime_context_key_present" == "true" ]]; then
+      discoverable_regime_context_key="$manifest_regime_context_key"
+      discoverable_regime_context_key_present=true
+    fi
+
     if [[ -z "$discoverable_delta_key" ]]; then
       jq -nc \
         --arg symbol "$symbol" \
         --argjson window_start_ms "$window_start_ms" \
+        --arg regime_key "$regime_key" \
         --arg index_pointer_key "$index_pointer_key" \
         --arg manifest_key "$manifest_key" \
         --arg manifest_delta_key "$manifest_delta_key" \
+        --arg manifest_regime_context_key "$manifest_regime_context_key" \
+        --arg discoverable_regime_context_key "$discoverable_regime_context_key" \
         --argjson direct_delta_key_present "$direct_delta_key_present" \
+        --argjson direct_regime_context_key_present "$direct_regime_context_key_present" \
         --argjson index_pointer_present "$index_pointer_present" \
         --argjson manifest_present "$manifest_present" \
         --argjson manifest_delta_key_present "$manifest_delta_key_present" \
+        --argjson manifest_regime_context_key_present "$manifest_regime_context_key_present" \
         --argjson discoverable_delta_key_present "$discoverable_delta_key_present" \
+        --argjson discoverable_regime_context_key_present "$discoverable_regime_context_key_present" \
         '{
           symbol:$symbol,
           window_start_ms:$window_start_ms,
           delta_key:null,
           delta_key_present:$direct_delta_key_present,
+          regime_context_key:(if $regime_key == "" then null else $regime_key end),
+          regime_context_key_present:$direct_regime_context_key_present,
           index_pointer_key:$index_pointer_key,
           index_pointer_present:$index_pointer_present,
           manifest_key:(if $manifest_key == "" then null else $manifest_key end),
           manifest_present:$manifest_present,
           manifest_delta_key:(if $manifest_delta_key == "" then null else $manifest_delta_key end),
           manifest_delta_key_present:$manifest_delta_key_present,
+          manifest_regime_context_key:(if $manifest_regime_context_key == "" then null else $manifest_regime_context_key end),
+          manifest_regime_context_key_present:$manifest_regime_context_key_present,
           discoverable_delta_key:null,
           discoverable_delta_key_present:$discoverable_delta_key_present,
+          discoverable_regime_context_key:(if $discoverable_regime_context_key == "" then null else $discoverable_regime_context_key end),
+          discoverable_regime_context_key_present:$discoverable_regime_context_key_present,
           symbol_delta_count:null
         }' \
         >> "$s3_checks_jsonl"
@@ -376,29 +430,41 @@ if [[ "$check_s3_normalized" == "true" ]]; then
       --arg symbol "$symbol" \
       --argjson window_start_ms "$window_start_ms" \
       --arg key "$key" \
+      --arg regime_key "$regime_key" \
       --arg index_pointer_key "$index_pointer_key" \
       --arg manifest_key "$manifest_key" \
       --arg manifest_delta_key "$manifest_delta_key" \
+      --arg manifest_regime_context_key "$manifest_regime_context_key" \
       --arg discoverable_delta_key "$discoverable_delta_key" \
+      --arg discoverable_regime_context_key "$discoverable_regime_context_key" \
       --argjson direct_delta_key_present "$direct_delta_key_present" \
+      --argjson direct_regime_context_key_present "$direct_regime_context_key_present" \
       --argjson index_pointer_present "$index_pointer_present" \
       --argjson manifest_present "$manifest_present" \
       --argjson manifest_delta_key_present "$manifest_delta_key_present" \
+      --argjson manifest_regime_context_key_present "$manifest_regime_context_key_present" \
       --argjson discoverable_delta_key_present "$discoverable_delta_key_present" \
+      --argjson discoverable_regime_context_key_present "$discoverable_regime_context_key_present" \
       --argjson symbol_delta_count "$symbol_delta_count" \
       '{
         symbol:$symbol,
         window_start_ms:$window_start_ms,
         delta_key:(if $key == "" then null else $key end),
         delta_key_present:$direct_delta_key_present,
+        regime_context_key:(if $regime_key == "" then null else $regime_key end),
+        regime_context_key_present:$direct_regime_context_key_present,
         index_pointer_key:$index_pointer_key,
         index_pointer_present:$index_pointer_present,
         manifest_key:(if $manifest_key == "" then null else $manifest_key end),
         manifest_present:$manifest_present,
         manifest_delta_key:(if $manifest_delta_key == "" then null else $manifest_delta_key end),
         manifest_delta_key_present:$manifest_delta_key_present,
+        manifest_regime_context_key:(if $manifest_regime_context_key == "" then null else $manifest_regime_context_key end),
+        manifest_regime_context_key_present:$manifest_regime_context_key_present,
         discoverable_delta_key:$discoverable_delta_key,
         discoverable_delta_key_present:$discoverable_delta_key_present,
+        discoverable_regime_context_key:(if $discoverable_regime_context_key == "" then null else $discoverable_regime_context_key end),
+        discoverable_regime_context_key_present:$discoverable_regime_context_key_present,
         symbol_delta_count:$symbol_delta_count
       }' >> "$s3_checks_jsonl"
   done < <(jq -r '.[] | [.symbol, .window_start_ms] | @tsv' "$s3_window_plan_json")
@@ -447,9 +513,12 @@ jq -n \
           checked_window_count:($checks | length),
           missing_delta_key_count:($checks | map(select(.delta_key_present == false)) | length),
           present_delta_key_count:($checks | map(select(.delta_key_present == true)) | length),
+          missing_regime_context_key_count:($checks | map(select(.regime_context_key_present == false)) | length),
+          present_regime_context_key_count:($checks | map(select(.regime_context_key_present == true)) | length),
           present_index_pointer_count:($checks | map(select(.index_pointer_present == true)) | length),
           present_manifest_count:($checks | map(select(.manifest_present == true)) | length),
           present_manifest_delta_key_count:($checks | map(select(.manifest_delta_key_present == true)) | length),
+          present_manifest_regime_context_key_count:($checks | map(select(.manifest_regime_context_key_present == true)) | length),
           missing_discoverable_delta_key_count:(
             $checks
             | map(select(.discoverable_delta_key_present == false))
@@ -458,6 +527,16 @@ jq -n \
           present_discoverable_delta_key_count:(
             $checks
             | map(select(.discoverable_delta_key_present == true))
+            | length
+          ),
+          missing_discoverable_regime_context_key_count:(
+            $checks
+            | map(select(.discoverable_regime_context_key_present == false))
+            | length
+          ),
+          present_discoverable_regime_context_key_count:(
+            $checks
+            | map(select(.discoverable_regime_context_key_present == true))
             | length
           ),
           zero_symbol_delta_count:(
@@ -471,7 +550,9 @@ jq -n \
             | length
           ),
           missing_delta_key_rows:($checks | map(select(.delta_key_present == false))),
+          missing_regime_context_key_rows:($checks | map(select(.regime_context_key_present == false))),
           missing_discoverable_delta_key_rows:($checks | map(select(.discoverable_delta_key_present == false))),
+          missing_discoverable_regime_context_key_rows:($checks | map(select(.discoverable_regime_context_key_present == false))),
           zero_symbol_delta_rows:($checks | map(select(.symbol_delta_count != null and .symbol_delta_count == 0))),
           sample_rows:($checks[0:20])
         }

@@ -393,8 +393,10 @@ By default this is local-only. It does not upload reports, start ECS tasks,
 switch the dispatcher, or create shadow/paper/live artifacts. Enable the
 read-only S3 existence check only when you need to confirm whether
 the current missing replay windows are discoverable through either direct
-`market_feature_delta/run_id=l1_<window>_*/delta.json` keys or the
-`l1_index -> manifest -> market_feature_delta_key` path:
+`market_feature_delta/run_id=l1_<window>_*/delta.json` /
+`market_regime_context/run_id=l1_<window>_*/context.json` keys or the
+`l1_index -> manifest -> market_feature_delta_key / market_regime_context_key`
+path:
 
 ```bash
 AWS_PROFILE=<sso-profile> \
@@ -410,9 +412,10 @@ scripts/diagnose-market-l1-coverage-gaps.sh \
 ```
 
 The diagnosis can prove that replay is blocked by missing discoverable
-Market-L1 feature delta objects for the checked windows. It is not proof that
-research promotion passed, and it is not approval to open shadow, paper, or
-live trading.
+Market-L1 feature delta objects for the checked windows, and it separately
+reports whether regime context is discoverable for market-regime split quality.
+It is not proof that research promotion passed, and it is not approval to open
+shadow, paper, or live trading.
 
 ## Focused Retest Manifest
 
