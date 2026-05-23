@@ -163,15 +163,15 @@ jq \
         | ($bundle.validation_requirements.include_liquidity_filter // false) as $liquidity_required
         | ($matched | map(.train_validation_split_summary.materialized // false) | any_true) as $split_materialized
         | ($matched | map(.liquidity_filter_materialized_count // 0) | max_or_zero) as $liquidity_materialized
-        | ($matched | map(.gate_reason_codes // []) | add | unique_sorted) as $aggregate_reason_codes
+        | ($matched | map(.gate_reason_codes // []) | add // [] | unique_sorted) as $aggregate_reason_codes
         | (
             ($report.summary_findings // [])
             | map(select(.candidate_id == $bundle.candidate_id))
             | map(.reason_codes // [])
-            | add
+            | add // []
             | unique_sorted
-          ) as $finding_reason_codes
-        | (($aggregate_reason_codes + $finding_reason_codes) | unique_sorted) as $reason_codes
+          ) as $candidate_reason_codes
+        | $aggregate_reason_codes as $reason_codes
         | {
             candidate_id:$bundle.candidate_id,
             candidate_lifecycle_key:$bundle.candidate_lifecycle_key,
@@ -206,6 +206,7 @@ jq \
             aggregate_count:($matched | length),
             gate_biases:($matched | map(.gate_bias) | unique_sorted),
             reason_codes:$reason_codes,
+            candidate_reason_codes:$candidate_reason_codes,
             next_action:(
               if $horizon_ms == null then "define_horizon_duration"
               elif $due_ms == null then "define_replay_boundary"

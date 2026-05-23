@@ -322,6 +322,12 @@ The output separates:
 - materialize_liquidity_filter_inputs
 ```
 
+Horizon `next_action` is based on horizon-specific aggregate gate reasons.
+Candidate-level `summary_findings.reason_codes` are preserved separately as
+`candidate_reason_codes`, but they are not used to mark every horizon as a
+Market-L1 coverage gap. This keeps stale or cross-horizon candidate reasons from
+masking horizons that are already ready for replay.
+
 ## Retest Horizon Status
 
 Use the retest horizon status summary to track every candidate by symbol and
@@ -378,8 +384,9 @@ materialize_completed_native_replay_sample
 ```
 
 Horizons classified as `extend_market_l1_horizon_coverage` are intentionally not
-selected by default, because repeating research before the missing Market-L1
-coverage is materialized will keep producing `missing_native_replay_market_data`.
+selected by default, because repeating research before the horizon-specific
+Market-L1 aggregate coverage is materialized will keep producing
+`missing_native_replay_market_data`.
 
 Override with `RESEARCH_FOCUS_NEXT_ACTIONS=action_a,action_b`. The script is
 local-manifest only. By default it excludes historical replay index refs so a
