@@ -120,6 +120,8 @@ If deterministic market replay data is missing, the app emits `RETEST_BIAS` with
 
 The report includes `partition_aggregates` with sample counts, win rate, net edge, profit factor, inferred unseen windows, regime labels, and deterministic gate reasons. Positive replay is never enough by itself: promotion is blocked until sample, unseen, split, liquidity, cost, and regime evidence clear the research gate.
 
+Each `replay_run_v1.result_summary` includes `liquidity_filter_summary` when the candidate bundle requests a liquidity filter. Native replay marks it `passed` only when matched Market-L1 replay data contains a liquidity metric such as `trade_volume` or `volume_change_same_window` with positive current volume. If no liquidity metric is matched, the aggregate gate keeps `liquidity_filter_not_materialized`; if liquidity data exists but has no positive current volume, it emits `liquidity_filter_failed`.
+
 Historical replay-runs are merged into the aggregate gate, but only the current invocation's replay-runs are written to the new replay-run output. Each replay-run output also gets a `replay-run-index/schema=replay_run_index_v1/.../part-000001.jsonl` artifact so later research runs can discover historical samples by `research_aggregate_key`.
 
 Every report writes `research-aggregate-registry/schema=research_aggregate_registry_record_v1/.../part-000001.jsonl`. This is a research-owned projection, not the canonical `memory-app` candidate registry. It can say `pruned`, `retest`, `shadow_candidate`, or `paper_candidate_bias`, but never `EXECUTION_APPROVED` or `LIVE_READY`.

@@ -1,7 +1,7 @@
 use crate::model::{
-    DEFAULT_RESEARCH_GATE_POLICY_VERSION, IntelCandidateEvidenceBundle, RegimeReplaySummary,
-    ReplayRun, ReplayRunStatus, ResearchBias, ResearchGatePolicy, ResearchPartitionAggregate,
-    SurvivalBand, TrainValidationSplitSummary,
+    DEFAULT_RESEARCH_GATE_POLICY_VERSION, IntelCandidateEvidenceBundle, LiquidityFilterStatus,
+    RegimeReplaySummary, ReplayRun, ReplayRunStatus, ResearchBias, ResearchGatePolicy,
+    ResearchPartitionAggregate, SurvivalBand, TrainValidationSplitSummary,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -81,6 +81,9 @@ struct AggregateAccumulator {
     invalid_input_count: usize,
     missing_market_replay_data_count: usize,
     insufficient_evidence_count: usize,
+    liquidity_filter_materialized_count: usize,
+    liquidity_filter_passed_count: usize,
+    liquidity_filter_failed_count: usize,
     positive_net_count: usize,
     non_positive_net_count: usize,
     raw_returns: Vec<f64>,
@@ -145,6 +148,9 @@ impl AggregateAccumulator {
             invalid_input_count: 0,
             missing_market_replay_data_count: 0,
             insufficient_evidence_count: 0,
+            liquidity_filter_materialized_count: 0,
+            liquidity_filter_passed_count: 0,
+            liquidity_filter_failed_count: 0,
             positive_net_count: 0,
             non_positive_net_count: 0,
             raw_returns: Vec::new(),
@@ -213,6 +219,9 @@ impl AggregateAccumulator {
         match run.result_summary.status {
             ReplayRunStatus::Completed => {
                 self.completed_count += 1;
+                if self.liquidity_filter_required {
+                    self.add_liquidity_filter_summary(run);
+                }
                 if let Some(value) = run.result_summary.raw_return_bps {
                     self.raw_returns.push(value);
                 }
@@ -335,6 +344,9 @@ impl AggregateAccumulator {
             invalid_input_count: self.invalid_input_count,
             missing_market_replay_data_count: self.missing_market_replay_data_count,
             insufficient_evidence_count: self.insufficient_evidence_count,
+            liquidity_filter_materialized_count: self.liquidity_filter_materialized_count,
+            liquidity_filter_passed_count: self.liquidity_filter_passed_count,
+            liquidity_filter_failed_count: self.liquidity_filter_failed_count,
             positive_net_count: self.positive_net_count,
             non_positive_net_count: self.non_positive_net_count,
             win_rate_ppm,
@@ -357,6 +369,23 @@ impl AggregateAccumulator {
             survival_band,
             gate_bias,
             gate_reason_codes,
+        }
+    }
+
+    fn add_liquidity_filter_summary(&mut self, run: &ReplayRun) {
+        let Some(summary) = run.result_summary.liquidity_filter_summary.as_ref() else {
+            return;
+        };
+        match summary.status {
+            LiquidityFilterStatus::Passed => {
+                self.liquidity_filter_materialized_count += 1;
+                self.liquidity_filter_passed_count += 1;
+            }
+            LiquidityFilterStatus::Failed => {
+                self.liquidity_filter_materialized_count += 1;
+                self.liquidity_filter_failed_count += 1;
+            }
+            LiquidityFilterStatus::NotMaterialized | LiquidityFilterStatus::NotRequired => {}
         }
     }
 }
@@ -435,8 +464,16 @@ fn evaluate_gate(inputs: &GateEvaluationInputs<'_>) -> (ResearchBias, Vec<String
     {
         blockers.push("train_validation_split_failed".to_owned());
     }
-    if inputs.accumulator.liquidity_filter_required {
+    if inputs.accumulator.liquidity_filter_required
+        && inputs.accumulator.liquidity_filter_materialized_count
+            < inputs.accumulator.completed_count
+    {
         blockers.push("liquidity_filter_not_materialized".to_owned());
+    }
+    if inputs.accumulator.liquidity_filter_required
+        && inputs.accumulator.liquidity_filter_failed_count > 0
+    {
+        blockers.push("liquidity_filter_failed".to_owned());
     }
     if inputs.accumulator.market_regime_labels.len()
         < inputs.policy.min_market_regime_label_count_for_shadow

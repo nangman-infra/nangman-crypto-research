@@ -421,6 +421,23 @@ pub enum ReplayRunStatus {
     InsufficientEvidence,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LiquidityFilterStatus {
+    NotRequired,
+    Passed,
+    Failed,
+    NotMaterialized,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct LiquidityFilterSummary {
+    pub status: LiquidityFilterStatus,
+    pub reason_codes: Vec<String>,
+    pub observed_metric_count: usize,
+    pub positive_volume_metric_count: usize,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct ReplayRun {
     pub replay_run_id: String,
@@ -494,6 +511,8 @@ pub struct ReplayResultSummary {
     pub estimated_cost_bps: f64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub market_regime_labels: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub liquidity_filter_summary: Option<LiquidityFilterSummary>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -574,6 +593,9 @@ pub struct ResearchPartitionAggregate {
     pub invalid_input_count: usize,
     pub missing_market_replay_data_count: usize,
     pub insufficient_evidence_count: usize,
+    pub liquidity_filter_materialized_count: usize,
+    pub liquidity_filter_passed_count: usize,
+    pub liquidity_filter_failed_count: usize,
     pub positive_net_count: usize,
     pub non_positive_net_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
