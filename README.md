@@ -221,6 +221,32 @@ This check intentionally reports bottlenecks such as `dispatcher_not_run_task`,
 `shadow_output_absent`, and `paper_output_absent` instead of calling the system
 "done" just because ECS or Lambda is healthy.
 
+## Research Report Summary
+
+Use the local report summary when a batch run completes but every candidate
+stays in `RETEST_BIAS`. It reads local artifacts only and does not upload S3
+outputs, start ECS tasks, switch the dispatcher, or create shadow/paper
+artifacts.
+
+```bash
+cd /Volumes/WD/Developments/nangman-crypto/apps/research-app
+
+RESEARCH_REPORT_FILE="/tmp/nangman-crypto/research-output/research-run-report/schema=research_run_report_v1/dt=YYYY-MM-DD/hour=HH/research_run_report_id=<report-id>/report.json" \
+RESEARCH_AGGREGATE_REGISTRY_FILE="/tmp/nangman-crypto/research-output/research-aggregate-registry/schema=research_aggregate_registry_record_v1/dt=YYYY-MM-DD/hour=HH/research_run_report_id=<report-id>/part-000001.jsonl" \
+scripts/summarize-research-report.sh
+```
+
+The summary separates:
+
+```text
+- source candidate / replay / partition counts
+- RETEST / PRUNE / surviving counts
+- reason-code histogram
+- per-symbol aggregate sample counts
+- strongest positive RETEST aggregates
+- next research needs such as more native replay samples, unseen windows, or liquidity inputs
+```
+
 ## Post-Activation Runtime Check
 
 After an approved output-enabled run or dispatcher activation, verify the
