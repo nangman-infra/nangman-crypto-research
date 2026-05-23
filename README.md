@@ -449,6 +449,7 @@ By default the focused manifest selects horizons with:
 
 ```text
 run_research_replay_for_horizon
+accumulate_completed_native_replay_samples
 materialize_completed_native_replay_sample
 ```
 

@@ -3,7 +3,7 @@ set -euo pipefail
 
 STATUS_FILE="${RESEARCH_HORIZON_STATUS_FILE:-${1:-}}"
 SOURCE_MANIFEST_FILE="${RESEARCH_SOURCE_MANIFEST_FILE:-${2:-}}"
-FOCUS_NEXT_ACTIONS="${RESEARCH_FOCUS_NEXT_ACTIONS:-run_research_replay_for_horizon,materialize_completed_native_replay_sample}"
+FOCUS_NEXT_ACTIONS="${RESEARCH_FOCUS_NEXT_ACTIONS:-run_research_replay_for_horizon,accumulate_completed_native_replay_samples,materialize_completed_native_replay_sample}"
 FOCUS_PACKET_ID="${RESEARCH_FOCUS_PACKET_ID:-research_focus_$(date -u +%Y%m%dT%H%M%SZ)}"
 FOCUS_RUN_SCOPE="${RESEARCH_FOCUS_RUN_SCOPE:-focused_retest_local_validation}"
 INCLUDE_HISTORICAL_INDEX_REFS="${RESEARCH_FOCUS_INCLUDE_HISTORICAL_INDEX_REFS:-false}"
