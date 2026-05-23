@@ -54,11 +54,11 @@ require_fresh_object() {
   last_modified="$(jq -r '.lastModified // empty' <<<"$object_json")"
   size="$(jq -r '.size // 0' <<<"$object_json")"
   if [[ -z "$key" || -z "$last_modified" || "$size" == "0" ]]; then
-    echo "missing or empty required output prefix: s3://${bucket}/${prefix}" >&2
+    echo "missing or empty required output prefix: s3://${bucket}/${prefix}" | redact >&2
     exit 1
   fi
   if [[ -n "$OUTPUT_MIN_LAST_MODIFIED" && "$last_modified" < "$OUTPUT_MIN_LAST_MODIFIED" ]]; then
-    echo "stale output prefix: s3://${bucket}/${prefix} latest=${last_modified} min=${OUTPUT_MIN_LAST_MODIFIED}" >&2
+    echo "stale output prefix: s3://${bucket}/${prefix} latest=${last_modified} min=${OUTPUT_MIN_LAST_MODIFIED}" | redact >&2
     exit 1
   fi
 }
