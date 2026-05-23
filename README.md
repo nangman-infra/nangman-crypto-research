@@ -362,6 +362,53 @@ The batch driver writes this checkpoint automatically as
 outputs, start ECS tasks, switch the dispatcher, or create shadow/paper/live
 artifacts.
 
+## Market-L1 Coverage Gap Diagnosis
+
+Use the Market-L1 coverage gap diagnosis when the retest horizon status reports
+`EXTEND_MARKET_L1_HORIZON_COVERAGE`. It reads the local retest plan, optional
+research report, and optional replay-run JSONL to separate three surfaces:
+
+```text
+- plan gaps: horizons that need Market-L1 coverage before replay can help
+- aggregate gaps: report partitions with missing native replay market data
+- current missing replay windows: concrete symbol/window starts to check in Market-L1
+```
+
+```bash
+cd /Volumes/WD/Developments/nangman-crypto/apps/research-app
+
+RUN_DIR=/tmp/nangman-crypto/research-current-approved-batch/<run-id>
+REPLAY_RUN_FILE=/tmp/nangman-crypto/research-current-approved-batch/<run-id>/research-output/replay-run/<partition>/part-000001.jsonl
+
+scripts/diagnose-market-l1-coverage-gaps.sh \
+  /tmp/nangman-crypto/research-current-approved-batch/<run-id>/retest-horizon-plan.json \
+  /tmp/nangman-crypto/research-current-approved-batch/<run-id>/research-output/research-run-report/<partition>/report.json \
+  "$REPLAY_RUN_FILE"
+```
+
+By default this is local-only. It does not upload reports, start ECS tasks,
+switch the dispatcher, or create shadow/paper/live artifacts. Enable the
+read-only S3 existence check only when you need to confirm whether
+`market_feature_delta/run_id=l1_<window>_*/delta.json` exists for the current
+missing replay windows:
+
+```bash
+AWS_PROFILE=<sso-profile> \
+AWS_REGION=ap-northeast-2 \
+RESEARCH_MARKET_L1_S3_BUCKET=nangman-crypto-dev-market-ingest-l1-<account-suffix> \
+RESEARCH_MARKET_L1_COVERAGE_CHECK_S3=true \
+RESEARCH_MARKET_L1_COVERAGE_CHECK_SYMBOLS=false \
+scripts/diagnose-market-l1-coverage-gaps.sh \
+  /tmp/nangman-crypto/research-current-approved-batch/<run-id>/retest-horizon-plan.json \
+  /tmp/nangman-crypto/research-current-approved-batch/<run-id>/research-output/research-run-report/<partition>/report.json \
+  "$REPLAY_RUN_FILE" \
+  > /tmp/nangman-crypto/research-current-approved-batch/<run-id>/market-l1-coverage-gap-diagnosis.json
+```
+
+The diagnosis can prove that replay is blocked by missing Market-L1 feature
+delta objects for the checked windows. It is not proof that research promotion
+passed, and it is not approval to open shadow, paper, or live trading.
+
 ## Focused Retest Manifest
 
 Use the focused retest manifest when a status checkpoint shows only a small set
