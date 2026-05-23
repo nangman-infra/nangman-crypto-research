@@ -63,6 +63,62 @@ latest_delta_key_for_window() {
     '
 }
 
+s3_object_exists() {
+  local key="$1"
+  aws_cmd s3api head-object --bucket "$MARKET_L1_BUCKET" --key "$key" >/dev/null 2>&1
+}
+
+normalize_s3_key() {
+  local value="$1"
+  value="${value#/}"
+  if [[ "$value" == s3://* ]]; then
+    value="${value#s3://}"
+    value="${value#*/}"
+  fi
+  printf '%s' "$value"
+}
+
+l1_index_pointer_key_for_window() {
+  local window_start_ms="$1"
+  local event_date
+  local hour
+  IFS=$'\t' read -r event_date hour < <(
+    jq -nr --argjson window_start_ms "$window_start_ms" '
+      (($window_start_ms / 1000) | floor | gmtime)
+      | [strftime("%Y-%m-%d"), strftime("%H")]
+      | @tsv
+    '
+  )
+  printf 'l1_index/window_ms=1000/event_date=%s/hour=%s/window_start_ms=%s.json' \
+    "$event_date" "$hour" "$window_start_ms"
+}
+
+manifest_key_from_l1_index_pointer() {
+  local pointer_key="$1"
+  aws_cmd s3 cp "s3://${MARKET_L1_BUCKET}/${pointer_key}" - \
+  | jq -r '
+      select(.schema_version == "l1_index_pointer_v1")
+      | select((.status // "" | ascii_downcase) == "success")
+      | (.canonical_manifest_key // .manifest_key // empty)
+    ' \
+  | while IFS= read -r key; do
+      normalize_s3_key "$key"
+    done
+}
+
+feature_delta_key_from_l1_manifest() {
+  local manifest_key="$1"
+  aws_cmd s3 cp "s3://${MARKET_L1_BUCKET}/${manifest_key}" - \
+  | jq -r '
+      select(.schema_version == "l1_manifest_v1")
+      | select((.status // "" | ascii_downcase) == "success")
+      | (.market_feature_delta_key // empty)
+    ' \
+  | while IFS= read -r key; do
+      normalize_s3_key "$key"
+    done
+}
+
 symbol_delta_count_for_key() {
   local key="$1"
   local symbol="$2"
@@ -250,30 +306,99 @@ if [[ "$check_s3_normalized" == "true" ]]; then
     fi
 
     key="$(latest_delta_key_for_window "$window_start_ms")"
-    if [[ -z "$key" ]]; then
+    direct_delta_key_present=false
+    if [[ -n "$key" ]]; then
+      direct_delta_key_present=true
+    fi
+
+    index_pointer_key="$(l1_index_pointer_key_for_window "$window_start_ms")"
+    index_pointer_present=false
+    manifest_key=""
+    manifest_present=false
+    manifest_delta_key=""
+    manifest_delta_key_present=false
+    if s3_object_exists "$index_pointer_key"; then
+      index_pointer_present=true
+      manifest_key="$(manifest_key_from_l1_index_pointer "$index_pointer_key" | sed -n '1p')"
+      if [[ -n "$manifest_key" ]] && s3_object_exists "$manifest_key"; then
+        manifest_present=true
+        manifest_delta_key="$(feature_delta_key_from_l1_manifest "$manifest_key" | sed -n '1p')"
+        if [[ -n "$manifest_delta_key" ]] && s3_object_exists "$manifest_delta_key"; then
+          manifest_delta_key_present=true
+        fi
+      fi
+    fi
+
+    discoverable_delta_key="$key"
+    discoverable_delta_key_present="$direct_delta_key_present"
+    if [[ "$discoverable_delta_key_present" != "true" && "$manifest_delta_key_present" == "true" ]]; then
+      discoverable_delta_key="$manifest_delta_key"
+      discoverable_delta_key_present=true
+    fi
+
+    if [[ -z "$discoverable_delta_key" ]]; then
       jq -nc \
         --arg symbol "$symbol" \
         --argjson window_start_ms "$window_start_ms" \
-        '{symbol:$symbol, window_start_ms:$window_start_ms, delta_key:null, delta_key_present:false, symbol_delta_count:null}' \
+        --arg index_pointer_key "$index_pointer_key" \
+        --arg manifest_key "$manifest_key" \
+        --arg manifest_delta_key "$manifest_delta_key" \
+        --argjson direct_delta_key_present "$direct_delta_key_present" \
+        --argjson index_pointer_present "$index_pointer_present" \
+        --argjson manifest_present "$manifest_present" \
+        --argjson manifest_delta_key_present "$manifest_delta_key_present" \
+        --argjson discoverable_delta_key_present "$discoverable_delta_key_present" \
+        '{
+          symbol:$symbol,
+          window_start_ms:$window_start_ms,
+          delta_key:null,
+          delta_key_present:$direct_delta_key_present,
+          index_pointer_key:$index_pointer_key,
+          index_pointer_present:$index_pointer_present,
+          manifest_key:(if $manifest_key == "" then null else $manifest_key end),
+          manifest_present:$manifest_present,
+          manifest_delta_key:(if $manifest_delta_key == "" then null else $manifest_delta_key end),
+          manifest_delta_key_present:$manifest_delta_key_present,
+          discoverable_delta_key:null,
+          discoverable_delta_key_present:$discoverable_delta_key_present,
+          symbol_delta_count:null
+        }' \
         >> "$s3_checks_jsonl"
       continue
     fi
 
     symbol_delta_count=null
     if [[ "$check_symbols_normalized" == "true" ]]; then
-      symbol_delta_count="$(symbol_delta_count_for_key "$key" "$symbol")"
+      symbol_delta_count="$(symbol_delta_count_for_key "$discoverable_delta_key" "$symbol")"
     fi
 
     jq -nc \
       --arg symbol "$symbol" \
       --argjson window_start_ms "$window_start_ms" \
       --arg key "$key" \
+      --arg index_pointer_key "$index_pointer_key" \
+      --arg manifest_key "$manifest_key" \
+      --arg manifest_delta_key "$manifest_delta_key" \
+      --arg discoverable_delta_key "$discoverable_delta_key" \
+      --argjson direct_delta_key_present "$direct_delta_key_present" \
+      --argjson index_pointer_present "$index_pointer_present" \
+      --argjson manifest_present "$manifest_present" \
+      --argjson manifest_delta_key_present "$manifest_delta_key_present" \
+      --argjson discoverable_delta_key_present "$discoverable_delta_key_present" \
       --argjson symbol_delta_count "$symbol_delta_count" \
       '{
         symbol:$symbol,
         window_start_ms:$window_start_ms,
-        delta_key:$key,
-        delta_key_present:true,
+        delta_key:(if $key == "" then null else $key end),
+        delta_key_present:$direct_delta_key_present,
+        index_pointer_key:$index_pointer_key,
+        index_pointer_present:$index_pointer_present,
+        manifest_key:(if $manifest_key == "" then null else $manifest_key end),
+        manifest_present:$manifest_present,
+        manifest_delta_key:(if $manifest_delta_key == "" then null else $manifest_delta_key end),
+        manifest_delta_key_present:$manifest_delta_key_present,
+        discoverable_delta_key:$discoverable_delta_key,
+        discoverable_delta_key_present:$discoverable_delta_key_present,
         symbol_delta_count:$symbol_delta_count
       }' >> "$s3_checks_jsonl"
   done < <(jq -r '.[] | [.symbol, .window_start_ms] | @tsv' "$s3_window_plan_json")
@@ -322,6 +447,19 @@ jq -n \
           checked_window_count:($checks | length),
           missing_delta_key_count:($checks | map(select(.delta_key_present == false)) | length),
           present_delta_key_count:($checks | map(select(.delta_key_present == true)) | length),
+          present_index_pointer_count:($checks | map(select(.index_pointer_present == true)) | length),
+          present_manifest_count:($checks | map(select(.manifest_present == true)) | length),
+          present_manifest_delta_key_count:($checks | map(select(.manifest_delta_key_present == true)) | length),
+          missing_discoverable_delta_key_count:(
+            $checks
+            | map(select(.discoverable_delta_key_present == false))
+            | length
+          ),
+          present_discoverable_delta_key_count:(
+            $checks
+            | map(select(.discoverable_delta_key_present == true))
+            | length
+          ),
           zero_symbol_delta_count:(
             $checks
             | map(select(.symbol_delta_count != null and .symbol_delta_count == 0))
@@ -333,6 +471,7 @@ jq -n \
             | length
           ),
           missing_delta_key_rows:($checks | map(select(.delta_key_present == false))),
+          missing_discoverable_delta_key_rows:($checks | map(select(.discoverable_delta_key_present == false))),
           zero_symbol_delta_rows:($checks | map(select(.symbol_delta_count != null and .symbol_delta_count == 0))),
           sample_rows:($checks[0:20])
         }

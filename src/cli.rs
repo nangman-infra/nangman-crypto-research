@@ -1495,6 +1495,8 @@ Market L1 replay input can be loaded from S3 in ECS:
   --market-l1-s3-bucket nangman-crypto-dev-market-ingest-l1-<account-suffix>
   --market-feature-delta-s3-key market_feature_delta/run_id=l1_.../delta.json
   --market-regime-context-s3-key market_regime_context/run_id=l1_.../context.json
+  The app can also discover later replay-window keys through direct run_id
+  prefixes or the success-only l1_index -> manifest path.
   --historical-replay-run-s3-bucket nangman-crypto-dev-research-<account-suffix>
   --historical-replay-run-s3-key replay-run/schema=replay_run_v1/dt=.../part-000001.jsonl
   --historical-replay-run-index-s3-bucket nangman-crypto-dev-research-<account-suffix>

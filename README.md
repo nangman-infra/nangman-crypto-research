@@ -97,10 +97,13 @@ promotion evidence.
 In ECS, market replay inputs are loaded from Market-L1 S3. The app first uses
 `selected_market_artifacts[].artifact_key` from the candidate bundle, then falls
 back to the sibling keys derived from `market_data_quality_summary/run_id=...`.
-It also discovers later Market-L1 15-minute replay windows from the candidate's
-`forbidden_lookahead_boundary_ms` through the currently materialized horizon, so
-native replay can progress after new post-decision market data lands without
-manually wiring every delta/context key.
+It also discovers later Market-L1 replay windows from the candidate's
+`forbidden_lookahead_boundary_ms` through the currently materialized horizon.
+Discovery first checks direct `market_feature_delta/run_id=l1_<window>_*` and
+`market_regime_context/run_id=l1_<window>_*` objects, then falls back through
+the success-only `l1_index/window_ms=1000/...` pointer to the L1 manifest. This
+lets research reuse longer Market-L1 normalize runs that cover the target
+window, without manually wiring every delta/context key.
 
 ## Current-Approved Batch Driver
 
@@ -389,8 +392,9 @@ scripts/diagnose-market-l1-coverage-gaps.sh \
 By default this is local-only. It does not upload reports, start ECS tasks,
 switch the dispatcher, or create shadow/paper/live artifacts. Enable the
 read-only S3 existence check only when you need to confirm whether
-`market_feature_delta/run_id=l1_<window>_*/delta.json` exists for the current
-missing replay windows:
+the current missing replay windows are discoverable through either direct
+`market_feature_delta/run_id=l1_<window>_*/delta.json` keys or the
+`l1_index -> manifest -> market_feature_delta_key` path:
 
 ```bash
 AWS_PROFILE=<sso-profile> \
@@ -405,9 +409,10 @@ scripts/diagnose-market-l1-coverage-gaps.sh \
   > /tmp/nangman-crypto/research-current-approved-batch/<run-id>/market-l1-coverage-gap-diagnosis.json
 ```
 
-The diagnosis can prove that replay is blocked by missing Market-L1 feature
-delta objects for the checked windows. It is not proof that research promotion
-passed, and it is not approval to open shadow, paper, or live trading.
+The diagnosis can prove that replay is blocked by missing discoverable
+Market-L1 feature delta objects for the checked windows. It is not proof that
+research promotion passed, and it is not approval to open shadow, paper, or
+live trading.
 
 ## Focused Retest Manifest
 

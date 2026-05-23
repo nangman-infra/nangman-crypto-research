@@ -69,6 +69,7 @@ pub async fn discover_latest_market_feature_delta_keys_from_s3(
         window_starts_ms,
         "market_feature_delta",
         "/delta.json",
+        "market_feature_delta_key",
     )
     .await
 }
@@ -102,6 +103,7 @@ pub async fn discover_latest_market_regime_context_keys_from_s3(
         window_starts_ms,
         "market_regime_context",
         "/context.json",
+        "market_regime_context_key",
     )
     .await
 }
@@ -420,6 +422,7 @@ async fn discover_latest_market_l1_keys_from_s3(
     window_starts_ms: &[i64],
     family_prefix: &str,
     file_suffix: &str,
+    manifest_key_field: &str,
 ) -> AppResult<Vec<String>> {
     if window_starts_ms.is_empty() {
         return Ok(Vec::new());
@@ -434,10 +437,121 @@ async fn discover_latest_market_l1_keys_from_s3(
         if let Some(key) = latest_key_with_prefix(&client, bucket, &prefix, file_suffix).await? {
             keys.push(key);
         }
+        if let Some(key) =
+            latest_key_from_l1_index(&client, bucket, *window_start_ms, manifest_key_field).await?
+        {
+            keys.push(key);
+        }
     }
     keys.sort();
     keys.dedup();
     Ok(keys)
+}
+
+async fn latest_key_from_l1_index(
+    client: &Client,
+    bucket: &str,
+    window_start_ms: i64,
+    manifest_key_field: &str,
+) -> AppResult<Option<String>> {
+    let pointer_key = l1_index_pointer_key(window_start_ms)?;
+    let pointer_bytes = match get_object_bytes(client, bucket, &pointer_key).await {
+        Ok(bytes) => bytes,
+        Err(error) if is_missing_market_artifact(&error) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let pointer = serde_json::from_slice::<serde_json::Value>(&pointer_bytes).map_err(|error| {
+        AppError::validation(format!(
+            "invalid Market-L1 index pointer s3://{bucket}/{pointer_key}: {error}"
+        ))
+    })?;
+    if !is_success_l1_index_pointer(&pointer) {
+        return Ok(None);
+    }
+    let manifest_key = l1_manifest_key_from_pointer(&pointer).ok_or_else(|| {
+        AppError::validation(format!(
+            "Market-L1 index pointer missing canonical manifest key: s3://{bucket}/{pointer_key}"
+        ))
+    })?;
+    let manifest_bytes = match get_object_bytes(client, bucket, &manifest_key).await {
+        Ok(bytes) => bytes,
+        Err(error) if is_missing_market_artifact(&error) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let manifest =
+        serde_json::from_slice::<serde_json::Value>(&manifest_bytes).map_err(|error| {
+            AppError::validation(format!(
+                "invalid Market-L1 manifest s3://{bucket}/{manifest_key}: {error}"
+            ))
+        })?;
+    if !is_success_l1_manifest(&manifest) {
+        return Ok(None);
+    }
+    Ok(l1_artifact_key_from_manifest(&manifest, manifest_key_field))
+}
+
+fn l1_index_pointer_key(window_start_ms: i64) -> AppResult<String> {
+    let part = partition(window_start_ms)?;
+    Ok(format!(
+        "l1_index/window_ms=1000/event_date={}/hour={:02}/window_start_ms={window_start_ms}.json",
+        part.date, part.hour
+    ))
+}
+
+fn l1_manifest_key_from_pointer(pointer: &serde_json::Value) -> Option<String> {
+    string_field(pointer, "canonical_manifest_key")
+        .or_else(|| string_field(pointer, "manifest_key"))
+        .and_then(normalize_s3_key)
+}
+
+fn l1_artifact_key_from_manifest(
+    manifest: &serde_json::Value,
+    manifest_key_field: &str,
+) -> Option<String> {
+    string_field(manifest, manifest_key_field).and_then(normalize_s3_key)
+}
+
+fn is_success_l1_index_pointer(pointer: &serde_json::Value) -> bool {
+    pointer
+        .get("schema_version")
+        .and_then(serde_json::Value::as_str)
+        == Some("l1_index_pointer_v1")
+        && pointer
+            .get("status")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|status| status.eq_ignore_ascii_case("success"))
+}
+
+fn is_success_l1_manifest(manifest: &serde_json::Value) -> bool {
+    manifest
+        .get("schema_version")
+        .and_then(serde_json::Value::as_str)
+        == Some("l1_manifest_v1")
+        && manifest
+            .get("status")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|status| status.eq_ignore_ascii_case("success"))
+}
+
+fn string_field<'a>(value: &'a serde_json::Value, field: &str) -> Option<&'a str> {
+    value
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn normalize_s3_key(value: &str) -> Option<String> {
+    let trimmed = value.trim().trim_start_matches('/');
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Some(uri_without_scheme) = trimmed.strip_prefix("s3://") {
+        let (_, key) = uri_without_scheme.split_once('/')?;
+        let key = key.trim_start_matches('/').trim();
+        return (!key.is_empty()).then(|| key.to_owned());
+    }
+    Some(trimmed.to_owned())
 }
 
 async fn latest_key_with_prefix(
@@ -733,6 +847,62 @@ fn normalize_prefix(prefix: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn l1_index_pointer_key_matches_market_ingest_partition_contract() {
+        assert_eq!(
+            l1_index_pointer_key(1_778_387_400_000).expect("valid timestamp"),
+            "l1_index/window_ms=1000/event_date=2026-05-10/hour=04/window_start_ms=1778387400000.json"
+        );
+    }
+
+    #[test]
+    fn extracts_manifest_and_artifact_keys_from_l1_index_contract() {
+        let pointer = json!({
+            "schema_version": "l1_index_pointer_v1",
+            "canonical_manifest_key": "s3://bucket/runs/run_id=l1_1_2_3/manifest.json",
+            "status": "success"
+        });
+        let manifest = json!({
+            "schema_version": "l1_manifest_v1",
+            "status": "success",
+            "market_feature_delta_key": "s3://bucket/market_feature_delta/run_id=l1_1_2_3/delta.json",
+            "market_regime_context_key": "market_regime_context/run_id=l1_1_2_3/context.json"
+        });
+
+        assert!(is_success_l1_index_pointer(&pointer));
+        assert_eq!(
+            l1_manifest_key_from_pointer(&pointer),
+            Some("runs/run_id=l1_1_2_3/manifest.json".to_owned())
+        );
+        assert!(is_success_l1_manifest(&manifest));
+        assert_eq!(
+            l1_artifact_key_from_manifest(&manifest, "market_feature_delta_key"),
+            Some("market_feature_delta/run_id=l1_1_2_3/delta.json".to_owned())
+        );
+        assert_eq!(
+            l1_artifact_key_from_manifest(&manifest, "market_regime_context_key"),
+            Some("market_regime_context/run_id=l1_1_2_3/context.json".to_owned())
+        );
+    }
+
+    #[test]
+    fn ignores_non_success_l1_index_or_manifest() {
+        let pointer = json!({
+            "schema_version": "l1_index_pointer_v1",
+            "canonical_manifest_key": "runs/run_id=l1_1_2_3/manifest.json",
+            "status": "failed"
+        });
+        let manifest = json!({
+            "schema_version": "l1_manifest_v1",
+            "status": "failed",
+            "market_feature_delta_key": "market_feature_delta/run_id=l1_1_2_3/delta.json"
+        });
+
+        assert!(!is_success_l1_index_pointer(&pointer));
+        assert!(!is_success_l1_manifest(&manifest));
+    }
 
     #[test]
     fn missing_market_artifact_errors_are_skippable() {
