@@ -8,6 +8,8 @@ use crate::model::{
 };
 use std::collections::BTreeSet;
 
+const HORIZON_MATERIALIZATION_TOLERANCE_MS: i64 = 1_000;
+
 pub fn build_invalid_replay_run(
     bundle: &IntelCandidateEvidenceBundle,
     admission: &AdmissionDecision,
@@ -99,6 +101,24 @@ fn summarize_native_replay(
             net_after_cost_bps: None,
             estimated_cost_bps: cost_bps,
             market_regime_labels: Vec::new(),
+        };
+    }
+
+    if !horizon_is_materialized(&matched, window_end_ms) {
+        return ReplayResultSummary {
+            status: ReplayRunStatus::InsufficientEvidence,
+            bias: ResearchBias::RetestBias,
+            reason_codes: vec!["native_replay_horizon_not_materialized".to_owned()],
+            matched_market_delta_count: matched.len(),
+            raw_return_bps: None,
+            btc_adjusted_return_bps: None,
+            net_after_cost_bps: None,
+            estimated_cost_bps: cost_bps,
+            market_regime_labels: matching_regime_labels(
+                regime_contexts,
+                window_start_ms,
+                window_end_ms,
+            ),
         };
     }
 
@@ -261,6 +281,16 @@ fn matching_regime_labels(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()
+}
+
+fn horizon_is_materialized(matched: &[&MarketFeatureDelta], window_end_ms: i64) -> bool {
+    matched
+        .iter()
+        .map(|delta| delta.window_end_ms)
+        .max()
+        .is_some_and(|latest_end_ms| {
+            latest_end_ms + HORIZON_MATERIALIZATION_TOLERANCE_MS >= window_end_ms
+        })
 }
 
 fn first_symbol(bundle: &IntelCandidateEvidenceBundle) -> String {
