@@ -1,23 +1,26 @@
 use crate::admission::validate_bundle_admission;
 use crate::error::{AppError, AppResult};
 use crate::io::{
-    read_candidate_bundles, read_market_feature_deltas, read_market_regime_contexts,
-    read_oss_adapter_runs, read_replay_run_index_records, read_replay_runs,
-    read_research_input_manifest, write_research_outputs,
+    ResearchOutputArtifacts, read_candidate_bundles, read_market_feature_deltas,
+    read_market_regime_contexts, read_oss_adapter_runs, read_replay_run_index_records,
+    read_replay_runs, read_research_input_manifest, read_shadow_validation_runs,
+    write_research_outputs,
 };
 use crate::model::{
     IntelCandidateEvidenceBundle, MarketFeatureDelta, MarketRegimeContext,
     OSS_ADAPTER_RUN_SCHEMA_VERSION, OssAdapterRun, RESEARCH_INPUT_MANIFEST_SCHEMA_VERSION,
     ReplayRun, ReplayRunIndexRecord, ResearchArtifactRef, ResearchInputManifest,
-    ResearchRuntimeBudgetPolicy,
+    ResearchRuntimeBudgetPolicy, ShadowValidationRun,
 };
+use crate::paper::build_paper_artifacts;
 use crate::replay::{build_invalid_replay_run, run_native_replay};
 use crate::report::build_report;
 use crate::storage::{
     read_candidate_bundles_from_s3, read_market_feature_deltas_from_s3,
     read_market_regime_contexts_from_s3, read_oss_adapter_runs_from_s3,
     read_replay_run_index_records_from_s3, read_replay_runs_from_s3,
-    read_research_input_manifest_from_s3, write_research_outputs_to_s3,
+    read_research_input_manifest_from_s3, read_shadow_validation_runs_from_s3,
+    write_research_outputs_to_s3,
 };
 use crate::time::now_ms;
 use serde::Serialize;
@@ -46,8 +49,11 @@ pub struct Args {
     pub historical_replay_run_files: Vec<PathBuf>,
     pub historical_replay_run_index_files: Vec<PathBuf>,
     pub oss_adapter_run_files: Vec<PathBuf>,
+    pub shadow_validation_run_files: Vec<PathBuf>,
     pub oss_adapter_run_s3_bucket: Option<String>,
     pub oss_adapter_run_s3_keys: Vec<String>,
+    pub shadow_validation_run_s3_bucket: Option<String>,
+    pub shadow_validation_run_s3_keys: Vec<String>,
     pub historical_replay_run_s3_bucket: Option<String>,
     pub historical_replay_run_s3_keys: Vec<String>,
     pub historical_replay_run_index_s3_bucket: Option<String>,
@@ -66,7 +72,12 @@ pub struct RunSummary {
     pub replay_runs_created: usize,
     pub historical_replay_runs_loaded: usize,
     pub oss_adapter_runs_loaded: usize,
+    pub shadow_validation_runs_loaded: usize,
     pub shadow_validation_runs_created: usize,
+    pub paper_trade_candidates_created: usize,
+    pub paper_trade_runs_created: usize,
+    pub paper_trade_summaries_created: usize,
+    pub paper_trade_marks_created: usize,
     pub portfolio_risk_reject_events_created: usize,
     pub portfolio_reduce_only_signals_created: usize,
     pub output_files: Vec<String>,
@@ -91,8 +102,11 @@ where
         historical_replay_run_files: Vec::new(),
         historical_replay_run_index_files: Vec::new(),
         oss_adapter_run_files: Vec::new(),
+        shadow_validation_run_files: Vec::new(),
         oss_adapter_run_s3_bucket: env_string("RESEARCH_OSS_ADAPTER_RUN_S3_BUCKET"),
         oss_adapter_run_s3_keys: env_list("RESEARCH_OSS_ADAPTER_RUN_S3_KEYS"),
+        shadow_validation_run_s3_bucket: env_string("RESEARCH_SHADOW_VALIDATION_RUN_S3_BUCKET"),
+        shadow_validation_run_s3_keys: env_list("RESEARCH_SHADOW_VALIDATION_RUN_S3_KEYS"),
         historical_replay_run_s3_bucket: env_string("RESEARCH_HISTORICAL_REPLAY_RUN_S3_BUCKET"),
         historical_replay_run_s3_keys: env_list("RESEARCH_HISTORICAL_REPLAY_RUN_S3_KEYS"),
         historical_replay_run_index_s3_bucket: env_string(
@@ -197,6 +211,12 @@ where
                     "--oss-adapter-run-file requires an absolute path",
                 )?);
             }
+            "--shadow-validation-run-file" => {
+                args.shadow_validation_run_files.push(absolute_path_arg(
+                    values.next(),
+                    "--shadow-validation-run-file requires an absolute path",
+                )?);
+            }
             "--oss-adapter-run-s3-bucket" => {
                 args.oss_adapter_run_s3_bucket = Some(non_empty_arg(
                     values.next(),
@@ -207,6 +227,18 @@ where
                 args.oss_adapter_run_s3_keys.push(non_empty_arg(
                     values.next(),
                     "--oss-adapter-run-s3-key requires a value",
+                )?);
+            }
+            "--shadow-validation-run-s3-bucket" => {
+                args.shadow_validation_run_s3_bucket = Some(non_empty_arg(
+                    values.next(),
+                    "--shadow-validation-run-s3-bucket requires a value",
+                )?);
+            }
+            "--shadow-validation-run-s3-key" => {
+                args.shadow_validation_run_s3_keys.push(non_empty_arg(
+                    values.next(),
+                    "--shadow-validation-run-s3-key requires a value",
                 )?);
             }
             "--historical-replay-run-s3-bucket" => {
@@ -341,6 +373,13 @@ where
             "--oss-adapter-run-s3-bucket is required when --oss-adapter-run-s3-key is set",
         ));
     }
+    if !args.shadow_validation_run_s3_keys.is_empty()
+        && args.shadow_validation_run_s3_bucket.is_none()
+    {
+        return Err(AppError::config(
+            "--shadow-validation-run-s3-bucket is required when --shadow-validation-run-s3-key is set",
+        ));
+    }
 
     Ok(Some(args))
 }
@@ -367,6 +406,8 @@ pub async fn run(args: Args) -> AppResult<RunSummary> {
     let regime_contexts = load_regime_contexts(&args, &bundles, manifest.as_ref()).await?;
     let historical_replay_runs = load_historical_replay_runs(&args, manifest.as_ref()).await?;
     let oss_adapter_runs = load_oss_adapter_runs(&args, manifest.as_ref()).await?;
+    let completed_shadow_validation_runs =
+        load_shadow_validation_runs(&args, manifest.as_ref()).await?;
     validate_oss_adapter_runs(&oss_adapter_runs)?;
     enforce_budget(
         "historical_replay_run_count",
@@ -377,6 +418,11 @@ pub async fn run(args: Args) -> AppResult<RunSummary> {
         "oss_adapter_run_count",
         oss_adapter_runs.len(),
         budget.max_oss_adapter_run_ref_count,
+    )?;
+    enforce_budget(
+        "shadow_validation_run_count",
+        completed_shadow_validation_runs.len(),
+        budget.max_shadow_validation_run_ref_count,
     )?;
     let created_at_ms = args
         .now_ms
@@ -403,33 +449,46 @@ pub async fn run(args: Args) -> AppResult<RunSummary> {
         .as_ref()
         .and_then(|manifest| manifest.run_scope.as_deref())
         .unwrap_or(&args.run_scope);
-    let report = build_report(
+    let mut report = build_report(
         research_packet_id,
         run_scope,
         created_at_ms,
         &bundles,
         &aggregate_replay_runs,
         &oss_adapter_runs,
+        &completed_shadow_validation_runs,
     );
+    let paper_artifacts = build_paper_artifacts(
+        &report,
+        &bundles,
+        &completed_shadow_validation_runs,
+        created_at_ms,
+    );
+    report.paper_trade_candidates = paper_artifacts
+        .candidates
+        .iter()
+        .map(|candidate| candidate.paper_trade_candidate_id.clone())
+        .collect();
+    let output_artifacts = ResearchOutputArtifacts {
+        report: &report,
+        replay_runs: &replay_runs,
+        shadow_validation_runs: &report.shadow_validation_runs,
+        paper_trade_candidates: &paper_artifacts.candidates,
+        paper_trade_runs: &paper_artifacts.runs,
+        paper_trade_summaries: &paper_artifacts.summaries,
+        paper_trade_marks: &paper_artifacts.marks,
+        output_partition_at_ms,
+    };
     let output_files = if let Some(output_dir) = args.output_dir.as_deref() {
-        write_research_outputs(
-            output_dir,
-            &report,
-            &replay_runs,
-            &report.shadow_validation_runs,
-            output_partition_at_ms,
-        )?
-        .into_iter()
-        .map(|path| path.display().to_string())
-        .collect()
+        write_research_outputs(output_dir, &output_artifacts)?
+            .into_iter()
+            .map(|path| path.display().to_string())
+            .collect()
     } else if let Some(output_bucket) = args.output_s3_bucket.as_deref() {
         write_research_outputs_to_s3(
             output_bucket,
             args.output_s3_prefix.as_deref().unwrap_or(""),
-            &report,
-            &replay_runs,
-            &report.shadow_validation_runs,
-            output_partition_at_ms,
+            &output_artifacts,
         )
         .await?
     } else {
@@ -442,7 +501,12 @@ pub async fn run(args: Args) -> AppResult<RunSummary> {
         replay_runs_created: replay_runs.len(),
         historical_replay_runs_loaded: historical_replay_runs.len(),
         oss_adapter_runs_loaded: oss_adapter_runs.len(),
+        shadow_validation_runs_loaded: completed_shadow_validation_runs.len(),
         shadow_validation_runs_created: report.shadow_validation_runs.len(),
+        paper_trade_candidates_created: paper_artifacts.candidates.len(),
+        paper_trade_runs_created: paper_artifacts.runs.len(),
+        paper_trade_summaries_created: paper_artifacts.summaries.len(),
+        paper_trade_marks_created: paper_artifacts.marks.len(),
         portfolio_risk_reject_events_created: report.portfolio_risk_reject_events.len(),
         portfolio_reduce_only_signals_created: report.portfolio_reduce_only_signals.len(),
         output_files,
@@ -498,6 +562,11 @@ fn validate_manifest_budget(
         budget.max_market_artifact_ref_count,
     )?;
     enforce_budget(
+        "shadow_validation_run_ref_count",
+        manifest.shadow_validation_run_refs.len(),
+        budget.max_shadow_validation_run_ref_count,
+    )?;
+    enforce_budget(
         "hypothesis_harness_result_ref_count",
         manifest.hypothesis_harness_result_refs.len(),
         budget.max_hypothesis_harness_result_ref_count,
@@ -535,6 +604,7 @@ fn all_manifest_refs(manifest: &ResearchInputManifest) -> Vec<&ResearchArtifactR
         .iter()
         .chain(manifest.market_feature_delta_refs.iter())
         .chain(manifest.market_regime_context_refs.iter())
+        .chain(manifest.shadow_validation_run_refs.iter())
         .chain(manifest.hypothesis_harness_result_refs.iter())
         .chain(manifest.oss_adapter_run_refs.iter())
         .chain(manifest.historical_replay_run_refs.iter())
@@ -748,6 +818,38 @@ async fn load_oss_adapter_runs(
     Ok(runs)
 }
 
+async fn load_shadow_validation_runs(
+    args: &Args,
+    manifest: Option<&ResearchInputManifest>,
+) -> AppResult<Vec<ShadowValidationRun>> {
+    let mut runs = Vec::new();
+    for path in &args.shadow_validation_run_files {
+        append_unique_shadow_validation_runs(&mut runs, read_shadow_validation_runs(path)?);
+    }
+    if let Some(manifest) = manifest {
+        for artifact_ref in &manifest.shadow_validation_run_refs {
+            append_unique_shadow_validation_runs(
+                &mut runs,
+                read_shadow_validation_runs_from_ref(artifact_ref).await?,
+            );
+        }
+    }
+    if !args.shadow_validation_run_s3_keys.is_empty() {
+        let bucket = args
+            .shadow_validation_run_s3_bucket
+            .as_deref()
+            .ok_or_else(|| {
+                AppError::config("RESEARCH_SHADOW_VALIDATION_RUN_S3_BUCKET is required")
+            })?;
+        append_unique_shadow_validation_runs(
+            &mut runs,
+            read_shadow_validation_runs_from_s3(bucket, &args.shadow_validation_run_s3_keys)
+                .await?,
+        );
+    }
+    Ok(runs)
+}
+
 fn validate_oss_adapter_runs(runs: &[OssAdapterRun]) -> AppResult<()> {
     for run in runs {
         if run.schema_version != OSS_ADAPTER_RUN_SCHEMA_VERSION {
@@ -835,6 +937,17 @@ async fn read_oss_adapter_runs_from_ref(
         ArtifactLocation::Local(path) => read_oss_adapter_runs(&path),
         ArtifactLocation::S3 { bucket, key } => {
             read_oss_adapter_runs_from_s3(&bucket, std::slice::from_ref(&key)).await
+        }
+    }
+}
+
+async fn read_shadow_validation_runs_from_ref(
+    artifact_ref: &ResearchArtifactRef,
+) -> AppResult<Vec<ShadowValidationRun>> {
+    match ArtifactLocation::from_uri(&artifact_ref.uri)? {
+        ArtifactLocation::Local(path) => read_shadow_validation_runs(&path),
+        ArtifactLocation::S3 { bucket, key } => {
+            read_shadow_validation_runs_from_s3(&bucket, std::slice::from_ref(&key)).await
         }
     }
 }
@@ -950,6 +1063,21 @@ fn append_unique_oss_adapter_runs(target: &mut Vec<OssAdapterRun>, runs: Vec<Oss
         .collect::<BTreeSet<_>>();
     for run in runs {
         if existing_ids.insert(run.oss_adapter_run_id.clone()) {
+            target.push(run);
+        }
+    }
+}
+
+fn append_unique_shadow_validation_runs(
+    target: &mut Vec<ShadowValidationRun>,
+    runs: Vec<ShadowValidationRun>,
+) {
+    let mut existing_ids = target
+        .iter()
+        .map(|run| run.shadow_validation_run_id.clone())
+        .collect::<BTreeSet<_>>();
+    for run in runs {
+        if existing_ids.insert(run.shadow_validation_run_id.clone()) {
             target.push(run);
         }
     }
@@ -1180,6 +1308,8 @@ Market L1 replay input can be loaded from S3 in ECS:
   --historical-replay-run-s3-key replay-run/schema=replay_run_v1/dt=.../part-000001.jsonl
   --historical-replay-run-index-s3-bucket nangman-crypto-dev-research-<account-suffix>
   --historical-replay-run-index-s3-key replay-run-index/schema=replay_run_index_v1/dt=.../part-000001.jsonl
+  --shadow-validation-run-s3-bucket nangman-crypto-dev-research-<account-suffix>
+  --shadow-validation-run-s3-key shadow-validation-run/schema=shadow_validation_run_v1/dt=.../part-000001.jsonl
 
 ECS input and output can also come from environment:
   RESEARCH_INPUT_MANIFEST_S3_BUCKET
@@ -1193,6 +1323,8 @@ ECS input and output can also come from environment:
   RESEARCH_HISTORICAL_REPLAY_RUN_S3_KEYS
   RESEARCH_HISTORICAL_REPLAY_RUN_INDEX_S3_BUCKET
   RESEARCH_HISTORICAL_REPLAY_RUN_INDEX_S3_KEYS
+  RESEARCH_SHADOW_VALIDATION_RUN_S3_BUCKET
+  RESEARCH_SHADOW_VALIDATION_RUN_S3_KEYS
   RESEARCH_OUTPUT_S3_BUCKET
   RESEARCH_OUTPUT_S3_PREFIX
 

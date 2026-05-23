@@ -3,11 +3,13 @@ use crate::hash::stable_id;
 use crate::holding::default_holding_policy;
 use crate::model::{
     HypothesisOutput, IntelCandidateEvidenceBundle, OssAdapterRun, OssAdapterVerdictBias,
-    RESEARCH_RUN_REPORT_SCHEMA_VERSION, ReplayRun, ReplayRunStatus, ResearchBias,
-    ResearchPartitionAggregate, ResearchRunReport, ResearchRunStatus,
-    SHADOW_VALIDATION_RUN_SCHEMA_VERSION, ShadowStartConditionSummary, ShadowTerminationPolicy,
-    ShadowValidationRun, ShadowWatchWindowPolicy, SummaryFinding,
+    PAPER_TRADE_CANDIDATE_SCHEMA_VERSION, RESEARCH_RUN_REPORT_SCHEMA_VERSION, ReplayRun,
+    ReplayRunStatus, ResearchBias, ResearchPartitionAggregate, ResearchRunReport,
+    ResearchRunStatus, SHADOW_VALIDATION_RUN_SCHEMA_VERSION, ShadowStartConditionSummary,
+    ShadowTerminationPolicy, ShadowValidationRun, ShadowValidationStatus, ShadowWatchWindowPolicy,
+    SummaryFinding,
 };
+use crate::paper::is_completed_passed_shadow;
 use crate::portfolio::build_portfolio_artifacts;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -18,10 +20,12 @@ pub fn build_report(
     bundles: &[IntelCandidateEvidenceBundle],
     replay_runs: &[ReplayRun],
     oss_adapter_runs: &[OssAdapterRun],
+    completed_shadow_validation_runs: &[ShadowValidationRun],
 ) -> ResearchRunReport {
     let candidate_identity = candidate_identity_parts(bundles).join("|");
     let replay_identity = replay_identity_parts(replay_runs).join("|");
     let oss_identity = oss_identity_parts(oss_adapter_runs).join("|");
+    let shadow_identity = shadow_identity_parts(completed_shadow_validation_runs).join("|");
     let report_id = stable_id(
         "research_report",
         &[
@@ -31,6 +35,7 @@ pub fn build_report(
             &candidate_identity,
             &replay_identity,
             &oss_identity,
+            &shadow_identity,
         ],
     );
     let source_candidate_ids = bundles
@@ -57,6 +62,7 @@ pub fn build_report(
         replay_runs,
         &partition_aggregates,
         oss_adapter_runs,
+        completed_shadow_validation_runs,
     );
     let invalid_input_candidate_keys = invalid_input_candidate_keys(bundles, replay_runs);
     let pruned_candidate_keys = summary_findings
@@ -182,6 +188,20 @@ fn oss_identity_parts(oss_adapter_runs: &[OssAdapterRun]) -> Vec<String> {
     parts
 }
 
+fn shadow_identity_parts(shadow_validation_runs: &[ShadowValidationRun]) -> Vec<String> {
+    let mut parts = shadow_validation_runs
+        .iter()
+        .map(|run| {
+            format!(
+                "{}:{}:{:?}:{}",
+                run.shadow_validation_run_id, run.candidate_lifecycle_key, run.status, run.passed
+            )
+        })
+        .collect::<Vec<_>>();
+    parts.sort();
+    parts
+}
+
 fn invalid_input_candidate_keys(
     bundles: &[IntelCandidateEvidenceBundle],
     replay_runs: &[ReplayRun],
@@ -207,7 +227,13 @@ fn candidate_findings(
     replay_runs: &[ReplayRun],
     partition_aggregates: &[ResearchPartitionAggregate],
     oss_adapter_runs: &[OssAdapterRun],
+    completed_shadow_validation_runs: &[ShadowValidationRun],
 ) -> Vec<SummaryFinding> {
+    let passed_shadow_candidate_keys = completed_shadow_validation_runs
+        .iter()
+        .filter(|run| is_completed_passed_shadow(run))
+        .map(|run| run.candidate_lifecycle_key.clone())
+        .collect::<BTreeSet<_>>();
     bundles
         .iter()
         .map(|bundle| {
@@ -230,6 +256,12 @@ fn candidate_findings(
                     .any(|aggregate| aggregate.gate_bias == ResearchBias::PruneBias)
             {
                 ResearchBias::PruneBias
+            } else if passed_shadow_candidate_keys.contains(&bundle.candidate_lifecycle_key)
+                && candidate_aggregates(bundle, partition_aggregates)
+                    .iter()
+                    .any(|aggregate| aggregate.gate_bias == ResearchBias::PromoteToShadowBias)
+            {
+                ResearchBias::PromoteToPaperBias
             } else if candidate_aggregates(bundle, partition_aggregates)
                 .iter()
                 .any(|aggregate| aggregate.gate_bias == ResearchBias::PromoteToShadowBias)
@@ -238,7 +270,7 @@ fn candidate_findings(
             } else {
                 ResearchBias::RetestBias
             };
-            let reason_codes = candidate_runs
+            let mut reason_codes = candidate_runs
                 .iter()
                 .flat_map(|run| run.result_summary.reason_codes.clone())
                 .chain(
@@ -250,6 +282,9 @@ fn candidate_findings(
                 .collect::<BTreeSet<_>>()
                 .into_iter()
                 .collect::<Vec<_>>();
+            if bias == ResearchBias::PromoteToPaperBias {
+                reason_codes.push("shadow_validation_passed_for_paper".to_owned());
+            }
             SummaryFinding {
                 candidate_id: bundle.candidate_id.clone(),
                 candidate_lifecycle_key: bundle.candidate_lifecycle_key.clone(),
@@ -364,6 +399,10 @@ fn shadow_validation_run_ids(
                                 .copied()
                                 .unwrap_or(0),
                         ),
+                        status: ShadowValidationStatus::Pending,
+                        passed: false,
+                        paper_trade_candidate_contract_version:
+                            PAPER_TRADE_CANDIDATE_SCHEMA_VERSION.to_owned(),
                         schema_version: SHADOW_VALIDATION_RUN_SCHEMA_VERSION.to_owned(),
                     }
                 })

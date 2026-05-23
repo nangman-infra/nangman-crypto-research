@@ -4,7 +4,7 @@ use crate::model::{
     ReplayRunIndexRecord, ResearchAggregateRegistryRecord, ResearchAggregateRegistryStage,
     ResearchBias, ResearchRunReport, ShadowValidationRun,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub fn build_replay_run_index_records(
     report: &ResearchRunReport,
@@ -57,6 +57,7 @@ pub fn build_research_aggregate_registry_records(
 ) -> Vec<ResearchAggregateRegistryRecord> {
     let shadow_run_ids_by_aggregate_key =
         shadow_run_ids_by_aggregate_key(&report.shadow_validation_runs);
+    let paper_candidate_keys = paper_candidate_keys(report);
 
     report
         .partition_aggregates
@@ -83,7 +84,11 @@ pub fn build_research_aggregate_registry_records(
                 validation_adapter: aggregate.validation_adapter.clone(),
                 strategy_id_or_family: aggregate.strategy_id_or_family.clone(),
                 parameter_variant_id: aggregate.parameter_variant_id.clone(),
-                current_research_stage: stage_for_bias(&aggregate.gate_bias),
+                current_research_stage: stage_for_aggregate(
+                    &aggregate.gate_bias,
+                    aggregate,
+                    &paper_candidate_keys,
+                ),
                 gate_bias: aggregate.gate_bias.clone(),
                 survival_band: aggregate.survival_band.clone(),
                 replay_run_count: aggregate.replay_run_count,
@@ -111,6 +116,15 @@ pub fn build_research_aggregate_registry_records(
         .collect()
 }
 
+fn paper_candidate_keys(report: &ResearchRunReport) -> BTreeSet<String> {
+    report
+        .summary_findings
+        .iter()
+        .filter(|finding| finding.bias == ResearchBias::PromoteToPaperBias)
+        .map(|finding| finding.candidate_lifecycle_key.clone())
+        .collect()
+}
+
 fn shadow_run_ids_by_aggregate_key(
     shadow_validation_runs: &[ShadowValidationRun],
 ) -> BTreeMap<String, Vec<String>> {
@@ -131,4 +145,19 @@ fn stage_for_bias(bias: &ResearchBias) -> ResearchAggregateRegistryStage {
         ResearchBias::PromoteToShadowBias => ResearchAggregateRegistryStage::ShadowCandidate,
         ResearchBias::PromoteToPaperBias => ResearchAggregateRegistryStage::PaperCandidateBias,
     }
+}
+
+fn stage_for_aggregate(
+    bias: &ResearchBias,
+    aggregate: &crate::model::ResearchPartitionAggregate,
+    paper_candidate_keys: &BTreeSet<String>,
+) -> ResearchAggregateRegistryStage {
+    if aggregate
+        .source_candidate_lifecycle_keys
+        .iter()
+        .any(|key| paper_candidate_keys.contains(key))
+    {
+        return ResearchAggregateRegistryStage::PaperCandidateBias;
+    }
+    stage_for_bias(bias)
 }

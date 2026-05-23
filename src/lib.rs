@@ -9,6 +9,7 @@ pub mod hash;
 pub mod holding;
 pub mod io;
 pub mod model;
+pub mod paper;
 pub mod portfolio;
 pub mod replay;
 pub mod report;

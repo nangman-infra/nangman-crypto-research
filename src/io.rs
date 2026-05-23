@@ -2,6 +2,7 @@ use crate::artifacts::{build_replay_run_index_records, build_research_aggregate_
 use crate::error::{AppError, AppResult};
 use crate::model::{
     IntelCandidateEvidenceBundle, MarketFeatureDelta, MarketRegimeContext, OssAdapterRun,
+    PaperTradeCandidate, PaperTradeMark, PaperTradeRun, PaperTradeSummary,
     PortfolioAllocationSnapshot, PortfolioReduceOnlySignal, PortfolioRiskRejectEvent, ReplayRun,
     ReplayRunIndexRecord, ResearchInputManifest, ResearchRunReport, ShadowValidationRun,
 };
@@ -13,6 +14,17 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 pub type PortfolioOutputBodies = (Option<Vec<u8>>, Vec<u8>, Vec<u8>);
+
+pub struct ResearchOutputArtifacts<'a> {
+    pub report: &'a ResearchRunReport,
+    pub replay_runs: &'a [ReplayRun],
+    pub shadow_validation_runs: &'a [ShadowValidationRun],
+    pub paper_trade_candidates: &'a [PaperTradeCandidate],
+    pub paper_trade_runs: &'a [PaperTradeRun],
+    pub paper_trade_summaries: &'a [PaperTradeSummary],
+    pub paper_trade_marks: &'a [PaperTradeMark],
+    pub output_partition_at_ms: i64,
+}
 
 pub fn read_candidate_bundles(path: &Path) -> AppResult<Vec<IntelCandidateEvidenceBundle>> {
     read_json_array_or_jsonl(path)
@@ -70,6 +82,10 @@ pub fn read_oss_adapter_runs(path: &Path) -> AppResult<Vec<OssAdapterRun>> {
     read_json_array_or_jsonl(path)
 }
 
+pub fn read_shadow_validation_runs(path: &Path) -> AppResult<Vec<ShadowValidationRun>> {
+    read_json_array_or_jsonl(path)
+}
+
 pub fn read_market_regime_contexts_from_bytes(
     label: &str,
     bytes: &[u8],
@@ -95,30 +111,43 @@ pub fn read_oss_adapter_runs_from_bytes(
     read_json_array_or_jsonl_bytes(label, bytes)
 }
 
+pub fn read_shadow_validation_runs_from_bytes(
+    label: &str,
+    bytes: &[u8],
+) -> AppResult<Vec<ShadowValidationRun>> {
+    read_json_array_or_jsonl_bytes(label, bytes)
+}
+
 pub fn write_research_outputs(
     output_dir: &Path,
-    report: &ResearchRunReport,
-    replay_runs: &[ReplayRun],
-    shadow_validation_runs: &[ShadowValidationRun],
-    output_partition_at_ms: i64,
+    artifacts: &ResearchOutputArtifacts<'_>,
 ) -> AppResult<Vec<PathBuf>> {
     let mut written = Vec::new();
-    let dt = partition(output_partition_at_ms)?;
+    let report = artifacts.report;
+    let dt = partition(artifacts.output_partition_at_ms)?;
     let report_key = format!(
         "research-run-report/schema={}/dt={}/hour={:02}/research_run_report_id={}/report.json",
         report.schema_version, dt.date, dt.hour, report.research_run_report_id
     );
     written.push(write_pretty_json(output_dir, &report_key, report)?);
 
-    if !replay_runs.is_empty() {
+    if !artifacts.replay_runs.is_empty() {
         let replay_key = format!(
             "replay-run/schema={}/dt={}/hour={:02}/research_run_report_id={}/part-000001.jsonl",
-            replay_runs[0].schema_version, dt.date, dt.hour, report.research_run_report_id
+            artifacts.replay_runs[0].schema_version,
+            dt.date,
+            dt.hour,
+            report.research_run_report_id
         );
         let replay_run_uri = output_dir.join(&replay_key).display().to_string();
-        let replay_run_index_records =
-            build_replay_run_index_records(report, replay_runs, &replay_run_uri, None, None);
-        written.push(write_jsonl(output_dir, &replay_key, replay_runs)?);
+        let replay_run_index_records = build_replay_run_index_records(
+            report,
+            artifacts.replay_runs,
+            &replay_run_uri,
+            None,
+            None,
+        );
+        written.push(write_jsonl(output_dir, &replay_key, artifacts.replay_runs)?);
         let replay_index_key = format!(
             "replay-run-index/schema={}/dt={}/hour={:02}/research_run_report_id={}/part-000001.jsonl",
             replay_run_index_records[0].schema_version,
@@ -133,10 +162,10 @@ pub fn write_research_outputs(
         )?);
     }
 
-    if !shadow_validation_runs.is_empty() {
+    if !artifacts.shadow_validation_runs.is_empty() {
         let shadow_key = format!(
             "shadow-validation-run/schema={}/dt={}/hour={:02}/research_run_report_id={}/part-000001.jsonl",
-            shadow_validation_runs[0].schema_version,
+            artifacts.shadow_validation_runs[0].schema_version,
             dt.date,
             dt.hour,
             report.research_run_report_id
@@ -144,7 +173,67 @@ pub fn write_research_outputs(
         written.push(write_jsonl(
             output_dir,
             &shadow_key,
-            shadow_validation_runs,
+            artifacts.shadow_validation_runs,
+        )?);
+    }
+
+    if !artifacts.paper_trade_candidates.is_empty() {
+        let candidate_key = format!(
+            "paper-trade-candidate/schema={}/dt={}/hour={:02}/research_run_report_id={}/part-000001.jsonl",
+            artifacts.paper_trade_candidates[0].schema_version,
+            dt.date,
+            dt.hour,
+            report.research_run_report_id
+        );
+        written.push(write_jsonl(
+            output_dir,
+            &candidate_key,
+            artifacts.paper_trade_candidates,
+        )?);
+    }
+
+    if !artifacts.paper_trade_runs.is_empty() {
+        let run_key = format!(
+            "paper-trade-run/schema={}/dt={}/hour={:02}/research_run_report_id={}/part-000001.jsonl",
+            artifacts.paper_trade_runs[0].schema_version,
+            dt.date,
+            dt.hour,
+            report.research_run_report_id
+        );
+        written.push(write_jsonl(
+            output_dir,
+            &run_key,
+            artifacts.paper_trade_runs,
+        )?);
+    }
+
+    if !artifacts.paper_trade_summaries.is_empty() {
+        let summary_key = format!(
+            "paper-trade-summary/schema={}/dt={}/hour={:02}/research_run_report_id={}/part-000001.jsonl",
+            artifacts.paper_trade_summaries[0].schema_version,
+            dt.date,
+            dt.hour,
+            report.research_run_report_id
+        );
+        written.push(write_jsonl(
+            output_dir,
+            &summary_key,
+            artifacts.paper_trade_summaries,
+        )?);
+    }
+
+    if !artifacts.paper_trade_marks.is_empty() {
+        let mark_key = format!(
+            "paper-trade-mark/schema={}/dt={}/hour={:02}/research_run_report_id={}/part-000001.jsonl",
+            artifacts.paper_trade_marks[0].schema_version,
+            dt.date,
+            dt.hour,
+            report.research_run_report_id
+        );
+        written.push(write_jsonl(
+            output_dir,
+            &mark_key,
+            artifacts.paper_trade_marks,
         )?);
     }
 

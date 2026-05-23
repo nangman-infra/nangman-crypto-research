@@ -120,7 +120,7 @@ Historical replay-runs are merged into the aggregate gate, but only the current 
 
 Every report writes `research-aggregate-registry/schema=research_aggregate_registry_record_v1/.../part-000001.jsonl`. This is a research-owned projection, not the canonical `memory-app` candidate registry. It can say `pruned`, `retest`, `shadow_candidate`, or `paper_candidate_bias`, but never `EXECUTION_APPROVED` or `LIVE_READY`.
 
-If the deterministic gate promotes a candidate to shadow, the app also writes `shadow-validation-run/schema=shadow_validation_run_v1/.../part-000001.jsonl`. Old samples are decay-aware:
+If the deterministic gate promotes a candidate to shadow, the app writes `shadow-validation-run/schema=shadow_validation_run_v1/.../part-000001.jsonl` with `status=pending`, `passed=false`, and `no_order_execution=true`. Old samples are decay-aware:
 
 ```text
 0-30 days   = full sample weight
@@ -129,4 +129,6 @@ If the deterministic gate promotes a candidate to shadow, the app also writes `s
 >90 days    = expired, excluded from promotion gate
 ```
 
-The app can emit `PROMOTE_TO_SHADOW_BIAS`, but `paper_trade_candidates` stays empty and `allow_promote_to_paper_bias` stays `false`.
+The app can emit `PROMOTE_TO_SHADOW_BIAS` from replay evidence alone. It emits `PROMOTE_TO_PAPER_BIAS` and writes `paper-trade-candidate`, `paper-trade-run`, `paper-trade-summary`, and `paper-trade-mark` only when a completed, passed `shadow_validation_run_v1` is supplied through `--shadow-validation-run-file`, `--shadow-validation-run-s3-key`, or `research_input_manifest_v1.shadow_validation_run_refs[]`.
+
+Paper output still does not approve execution. `paper_trade_summary.promote_recommendation` is a review signal only; the app never emits `EXECUTION_APPROVED` or `LIVE_READY`.

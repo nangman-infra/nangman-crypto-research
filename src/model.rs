@@ -13,6 +13,14 @@ pub const DEFAULT_COST_MODEL_VERSION: &str = "research_cost_model_v0_2026_05_09"
 pub const DEFAULT_VALIDATION_RECIPE_VERSION: &str = "native_replay_recipe_v0_2026_05_09";
 pub const DEFAULT_RESEARCH_GATE_POLICY_VERSION: &str = "research_gate_policy_v1_2026_05_09";
 pub const SHADOW_VALIDATION_RUN_SCHEMA_VERSION: &str = "shadow_validation_run_v1";
+pub const PAPER_TRADE_CANDIDATE_SCHEMA_VERSION: &str = "paper_trade_candidate_v1";
+pub const PAPER_TRADE_RUN_SCHEMA_VERSION: &str = "paper_trade_run_v1";
+pub const PAPER_TRADE_SUMMARY_SCHEMA_VERSION: &str = "paper_trade_summary_v1";
+pub const PAPER_TRADE_MARK_SCHEMA_VERSION: &str = "paper_trade_mark_v1";
+pub const PAPER_ACCOUNT_PROFILE_SCHEMA_VERSION: &str = "paper_account_profile_v1";
+pub const DEFAULT_PAPER_ACCOUNT_PROFILE_ID: &str = "research_app_internal_paper_profile_v1";
+pub const DEFAULT_PAPER_FEE_MODEL_VERSION: &str = "research_paper_fee_model_v1";
+pub const DEFAULT_PAPER_SLIPPAGE_MODEL_VERSION: &str = "research_paper_slippage_model_v1";
 pub const OSS_ADAPTER_RUN_SCHEMA_VERSION: &str = "oss_adapter_run_v1";
 pub const PORTFOLIO_ALLOCATION_SNAPSHOT_SCHEMA_VERSION: &str = "portfolio_allocation_snapshot_v1";
 pub const PORTFOLIO_RISK_REJECT_EVENT_SCHEMA_VERSION: &str = "portfolio_risk_reject_event_v1";
@@ -34,6 +42,8 @@ pub struct ResearchInputManifest {
     pub market_feature_delta_refs: Vec<ResearchArtifactRef>,
     #[serde(default)]
     pub market_regime_context_refs: Vec<ResearchArtifactRef>,
+    #[serde(default)]
+    pub shadow_validation_run_refs: Vec<ResearchArtifactRef>,
     #[serde(default)]
     pub hypothesis_harness_result_refs: Vec<ResearchArtifactRef>,
     #[serde(default)]
@@ -57,6 +67,8 @@ pub struct ResearchRuntimeBudgetPolicy {
     pub max_candidate_bundle_count: usize,
     #[serde(default = "default_max_market_artifact_ref_count")]
     pub max_market_artifact_ref_count: usize,
+    #[serde(default = "default_max_shadow_validation_run_ref_count")]
+    pub max_shadow_validation_run_ref_count: usize,
     #[serde(default = "default_max_hypothesis_harness_result_ref_count")]
     pub max_hypothesis_harness_result_ref_count: usize,
     #[serde(default = "default_max_oss_adapter_run_ref_count")]
@@ -72,6 +84,7 @@ impl Default for ResearchRuntimeBudgetPolicy {
         Self {
             max_candidate_bundle_count: default_max_candidate_bundle_count(),
             max_market_artifact_ref_count: default_max_market_artifact_ref_count(),
+            max_shadow_validation_run_ref_count: default_max_shadow_validation_run_ref_count(),
             max_hypothesis_harness_result_ref_count:
                 default_max_hypothesis_harness_result_ref_count(),
             max_oss_adapter_run_ref_count: default_max_oss_adapter_run_ref_count(),
@@ -87,6 +100,10 @@ fn default_max_candidate_bundle_count() -> usize {
 
 fn default_max_market_artifact_ref_count() -> usize {
     2_000
+}
+
+fn default_max_shadow_validation_run_ref_count() -> usize {
+    10_000
 }
 
 fn default_max_hypothesis_harness_result_ref_count() -> usize {
@@ -674,7 +691,26 @@ pub struct ShadowValidationRun {
     pub watch_window_policy: ShadowWatchWindowPolicy,
     pub termination_policy: ShadowTerminationPolicy,
     pub holding_policy: HoldingPolicy,
+    #[serde(default)]
+    pub status: ShadowValidationStatus,
+    #[serde(default)]
+    pub passed: bool,
+    #[serde(default = "default_paper_trade_candidate_contract_version")]
+    pub paper_trade_candidate_contract_version: String,
     pub schema_version: String,
+}
+
+fn default_paper_trade_candidate_contract_version() -> String {
+    PAPER_TRADE_CANDIDATE_SCHEMA_VERSION.to_owned()
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ShadowValidationStatus {
+    #[default]
+    Pending,
+    Completed,
+    Failed,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -726,6 +762,114 @@ pub struct ShadowTerminationPolicy {
     pub prune_on_non_positive_mean_net: bool,
     pub prune_on_max_age_without_samples: bool,
     pub no_order_execution: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct PaperAccountProfile {
+    pub paper_account_profile_id: String,
+    pub virtual_starting_balance: f64,
+    pub max_notional_per_candidate: f64,
+    pub fee_model_version: String,
+    pub slippage_model_version: String,
+    pub marking_frequency: String,
+    pub target_max_holding_hours: u32,
+    pub absolute_max_holding_hours: u32,
+    pub force_flat_policy: String,
+    pub schema_version: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct PaperTradeCandidate {
+    pub paper_trade_candidate_id: String,
+    pub candidate_lifecycle_key: String,
+    pub symbol_canonical: String,
+    pub source_research_run_id: String,
+    pub historical_survival_band: SurvivalBand,
+    pub shadow_summary: PaperShadowSummary,
+    pub expected_cost_profile: PaperExpectedCostProfile,
+    pub expected_risk_profile: PaperExpectedRiskProfile,
+    pub target_max_holding_hours: u32,
+    pub absolute_max_holding_hours: u32,
+    pub force_flat_policy: String,
+    pub paper_start_recommendation: String,
+    pub schema_version: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct PaperShadowSummary {
+    pub shadow_validation_run_id: String,
+    pub status: ShadowValidationStatus,
+    pub passed: bool,
+    pub completed_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mean_net_after_cost_bps: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub win_rate_ppm: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profit_factor_ppm: Option<u64>,
+    pub reason_codes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct PaperExpectedCostProfile {
+    pub fee_model_version: String,
+    pub slippage_model_version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub estimated_cost_bps: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_stressed_mean_net_after_cost_bps: Option<f64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct PaperExpectedRiskProfile {
+    pub survival_band: SurvivalBand,
+    pub max_drawdown_band: String,
+    pub positive_net_count: usize,
+    pub non_positive_net_count: usize,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct PaperTradeRun {
+    pub paper_trade_run_id: String,
+    pub candidate_lifecycle_key: String,
+    pub symbol_canonical: String,
+    pub source_research_run_id: String,
+    pub paper_account_profile_id: String,
+    pub started_at_ms: i64,
+    pub ended_at_ms: i64,
+    pub entry_count: usize,
+    pub exit_count: usize,
+    pub max_drawdown_band: String,
+    pub net_result_band: String,
+    pub survival_result: String,
+    pub schema_version: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct PaperTradeSummary {
+    pub paper_trade_summary_id: String,
+    pub paper_trade_run_id: String,
+    pub candidate_lifecycle_key: String,
+    pub summary_window: String,
+    pub entry_behavior_summary: String,
+    pub exit_behavior_summary: String,
+    pub cost_behavior_summary: String,
+    pub risk_behavior_summary: String,
+    pub promote_recommendation: String,
+    pub schema_version: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct PaperTradeMark {
+    pub paper_trade_mark_id: String,
+    pub paper_trade_run_id: String,
+    pub candidate_lifecycle_key: String,
+    pub symbol_canonical: String,
+    pub marked_at_ms: i64,
+    pub mark_source: String,
+    pub net_result_band: String,
+    pub survival_result: String,
+    pub schema_version: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]

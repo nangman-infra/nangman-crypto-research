@@ -229,8 +229,11 @@ async fn valid_bundle_without_market_data_becomes_retest_report() {
         historical_replay_run_files: Vec::new(),
         historical_replay_run_index_files: Vec::new(),
         oss_adapter_run_files: Vec::new(),
+        shadow_validation_run_files: Vec::new(),
         oss_adapter_run_s3_bucket: None,
         oss_adapter_run_s3_keys: Vec::new(),
+        shadow_validation_run_s3_bucket: None,
+        shadow_validation_run_s3_keys: Vec::new(),
         historical_replay_run_s3_bucket: None,
         historical_replay_run_s3_keys: Vec::new(),
         historical_replay_run_index_s3_bucket: None,
@@ -278,8 +281,11 @@ async fn horizon_over_72h_is_invalid_input() {
         historical_replay_run_files: Vec::new(),
         historical_replay_run_index_files: Vec::new(),
         oss_adapter_run_files: Vec::new(),
+        shadow_validation_run_files: Vec::new(),
         oss_adapter_run_s3_bucket: None,
         oss_adapter_run_s3_keys: Vec::new(),
+        shadow_validation_run_s3_bucket: None,
+        shadow_validation_run_s3_keys: Vec::new(),
         historical_replay_run_s3_bucket: None,
         historical_replay_run_s3_keys: Vec::new(),
         historical_replay_run_index_s3_bucket: None,
@@ -324,8 +330,11 @@ async fn oss_adapter_prune_bias_blocks_candidate_even_when_native_retest() {
         historical_replay_run_files: Vec::new(),
         historical_replay_run_index_files: Vec::new(),
         oss_adapter_run_files: vec![oss],
+        shadow_validation_run_files: Vec::new(),
         oss_adapter_run_s3_bucket: None,
         oss_adapter_run_s3_keys: Vec::new(),
+        shadow_validation_run_s3_bucket: None,
+        shadow_validation_run_s3_keys: Vec::new(),
         historical_replay_run_s3_bucket: None,
         historical_replay_run_s3_keys: Vec::new(),
         historical_replay_run_index_s3_bucket: None,
@@ -380,8 +389,11 @@ async fn oss_adapter_holding_violation_fails_before_report() {
         historical_replay_run_files: Vec::new(),
         historical_replay_run_index_files: Vec::new(),
         oss_adapter_run_files: vec![oss],
+        shadow_validation_run_files: Vec::new(),
         oss_adapter_run_s3_bucket: None,
         oss_adapter_run_s3_keys: Vec::new(),
+        shadow_validation_run_s3_bucket: None,
+        shadow_validation_run_s3_keys: Vec::new(),
         historical_replay_run_s3_bucket: None,
         historical_replay_run_s3_keys: Vec::new(),
         historical_replay_run_index_s3_bucket: None,
@@ -442,8 +454,11 @@ async fn negative_market_replay_prunes_candidate() {
         historical_replay_run_files: Vec::new(),
         historical_replay_run_index_files: Vec::new(),
         oss_adapter_run_files: Vec::new(),
+        shadow_validation_run_files: Vec::new(),
         oss_adapter_run_s3_bucket: None,
         oss_adapter_run_s3_keys: Vec::new(),
+        shadow_validation_run_s3_bucket: None,
+        shadow_validation_run_s3_keys: Vec::new(),
         historical_replay_run_s3_bucket: None,
         historical_replay_run_s3_keys: Vec::new(),
         historical_replay_run_index_s3_bucket: None,
@@ -490,8 +505,11 @@ async fn partial_market_replay_window_stays_insufficient_until_horizon_materiali
         historical_replay_run_files: Vec::new(),
         historical_replay_run_index_files: Vec::new(),
         oss_adapter_run_files: Vec::new(),
+        shadow_validation_run_files: Vec::new(),
         oss_adapter_run_s3_bucket: None,
         oss_adapter_run_s3_keys: Vec::new(),
+        shadow_validation_run_s3_bucket: None,
+        shadow_validation_run_s3_keys: Vec::new(),
         historical_replay_run_s3_bucket: None,
         historical_replay_run_s3_keys: Vec::new(),
         historical_replay_run_index_s3_bucket: None,
@@ -562,8 +580,11 @@ async fn positive_single_replay_stays_retest_until_gate_evidence_exists() {
         historical_replay_run_files: Vec::new(),
         historical_replay_run_index_files: Vec::new(),
         oss_adapter_run_files: Vec::new(),
+        shadow_validation_run_files: Vec::new(),
         oss_adapter_run_s3_bucket: None,
         oss_adapter_run_s3_keys: Vec::new(),
+        shadow_validation_run_s3_bucket: None,
+        shadow_validation_run_s3_keys: Vec::new(),
         historical_replay_run_s3_bucket: None,
         historical_replay_run_s3_keys: Vec::new(),
         historical_replay_run_index_s3_bucket: None,
@@ -682,8 +703,11 @@ async fn aggregate_gate_promotes_only_to_shadow_when_enterprise_blockers_clear()
         historical_replay_run_files: Vec::new(),
         historical_replay_run_index_files: Vec::new(),
         oss_adapter_run_files: Vec::new(),
+        shadow_validation_run_files: Vec::new(),
         oss_adapter_run_s3_bucket: None,
         oss_adapter_run_s3_keys: Vec::new(),
+        shadow_validation_run_s3_bucket: None,
+        shadow_validation_run_s3_keys: Vec::new(),
         historical_replay_run_s3_bucket: None,
         historical_replay_run_s3_keys: Vec::new(),
         historical_replay_run_index_s3_bucket: None,
@@ -783,6 +807,193 @@ async fn aggregate_gate_promotes_only_to_shadow_when_enterprise_blockers_clear()
 }
 
 #[tokio::test]
+async fn completed_shadow_validation_input_creates_paper_artifacts_without_live_approval() {
+    let root = test_root("paper-from-shadow");
+    let input = root.join("bundles.json");
+    let delta = root.join("delta.json");
+    let regime = root.join("regime.json");
+    let shadow_output = root.join("shadow-out");
+    let paper_output = root.join("paper-out");
+    let completed_shadow_file = root.join("completed-shadow.json");
+    let mut bundles = Vec::new();
+    let mut deltas = Vec::new();
+    let mut regimes = Vec::new();
+
+    for index in 0..31 {
+        let decision_ms = 1_300 + (index as i64 * 3_600_000);
+        let window_end_ms = decision_ms + 3_600_000;
+        bundles.push(bundle_json_with_gate_inputs(index, decision_ms));
+        deltas.push(market_delta_json(
+            &format!("delta_{index:03}"),
+            decision_ms,
+            window_end_ms,
+            0.5,
+        ));
+        regimes.push(market_regime_json(
+            &format!("regime_{index:03}"),
+            decision_ms,
+            window_end_ms,
+        ));
+    }
+
+    write_json(&input, &Value::Array(bundles));
+    write_json(&delta, &Value::Array(deltas));
+    write_json(&regime, &Value::Array(regimes));
+
+    let shadow_summary = run(Args {
+        input_manifest_file: None,
+        input_manifest_s3_bucket: None,
+        input_manifest_s3_key: None,
+        input_bundle_file: Some(input.clone()),
+        input_bundle_s3_bucket: None,
+        input_bundle_s3_key: None,
+        market_feature_delta_file: Some(delta.clone()),
+        market_regime_context_file: Some(regime.clone()),
+        market_l1_s3_bucket: None,
+        market_feature_delta_s3_keys: Vec::new(),
+        market_regime_context_s3_keys: Vec::new(),
+        historical_replay_run_files: Vec::new(),
+        historical_replay_run_index_files: Vec::new(),
+        oss_adapter_run_files: Vec::new(),
+        shadow_validation_run_files: Vec::new(),
+        oss_adapter_run_s3_bucket: None,
+        oss_adapter_run_s3_keys: Vec::new(),
+        shadow_validation_run_s3_bucket: None,
+        shadow_validation_run_s3_keys: Vec::new(),
+        historical_replay_run_s3_bucket: None,
+        historical_replay_run_s3_keys: Vec::new(),
+        historical_replay_run_index_s3_bucket: None,
+        historical_replay_run_index_s3_keys: Vec::new(),
+        output_dir: Some(shadow_output),
+        output_s3_bucket: None,
+        output_s3_prefix: None,
+        research_packet_id: "packet_test".to_owned(),
+        run_scope: "test".to_owned(),
+        now_ms: Some(120_000_000),
+    })
+    .await
+    .expect("shadow run succeeds");
+
+    let shadow_output_file = output_file_containing(&shadow_summary, "/shadow-validation-run/");
+    let completed_shadow_runs = fs::read_to_string(&shadow_output_file)
+        .expect("shadow output exists")
+        .lines()
+        .map(|line| {
+            let mut run: Value = serde_json::from_str(line).expect("shadow line parses");
+            run["status"] = json!("completed");
+            run["passed"] = json!(true);
+            run["paper_trade_candidate_contract_version"] = json!("paper_trade_candidate_v1");
+            run
+        })
+        .collect::<Vec<_>>();
+    write_json(&completed_shadow_file, &Value::Array(completed_shadow_runs));
+
+    let summary = run(Args {
+        input_manifest_file: None,
+        input_manifest_s3_bucket: None,
+        input_manifest_s3_key: None,
+        input_bundle_file: Some(input),
+        input_bundle_s3_bucket: None,
+        input_bundle_s3_key: None,
+        market_feature_delta_file: Some(delta),
+        market_regime_context_file: Some(regime),
+        market_l1_s3_bucket: None,
+        market_feature_delta_s3_keys: Vec::new(),
+        market_regime_context_s3_keys: Vec::new(),
+        historical_replay_run_files: Vec::new(),
+        historical_replay_run_index_files: Vec::new(),
+        oss_adapter_run_files: Vec::new(),
+        shadow_validation_run_files: vec![completed_shadow_file],
+        oss_adapter_run_s3_bucket: None,
+        oss_adapter_run_s3_keys: Vec::new(),
+        shadow_validation_run_s3_bucket: None,
+        shadow_validation_run_s3_keys: Vec::new(),
+        historical_replay_run_s3_bucket: None,
+        historical_replay_run_s3_keys: Vec::new(),
+        historical_replay_run_index_s3_bucket: None,
+        historical_replay_run_index_s3_keys: Vec::new(),
+        output_dir: Some(paper_output),
+        output_s3_bucket: None,
+        output_s3_prefix: None,
+        research_packet_id: "packet_test".to_owned(),
+        run_scope: "test".to_owned(),
+        now_ms: Some(120_000_000),
+    })
+    .await
+    .expect("paper run succeeds");
+
+    assert_eq!(summary.shadow_validation_runs_loaded, 31);
+    assert_eq!(summary.shadow_validation_runs_created, 0);
+    assert_eq!(summary.paper_trade_candidates_created, 31);
+    assert_eq!(summary.paper_trade_runs_created, 31);
+    assert_eq!(summary.paper_trade_summaries_created, 31);
+    assert_eq!(summary.paper_trade_marks_created, 31);
+
+    let report: Value =
+        serde_json::from_str(&fs::read_to_string(&summary.output_files[0]).expect("report exists"))
+            .expect("report json parses");
+    assert_eq!(
+        report["summary_findings"][0]["bias"],
+        json!("PROMOTE_TO_PAPER_BIAS")
+    );
+    assert_eq!(
+        report["paper_trade_candidates"]
+            .as_array()
+            .expect("paper candidate ids")
+            .len(),
+        31
+    );
+    let candidate_file = output_file_containing(&summary, "/paper-trade-candidate/");
+    let run_file = output_file_containing(&summary, "/paper-trade-run/");
+    let summary_file = output_file_containing(&summary, "/paper-trade-summary/");
+    let mark_file = output_file_containing(&summary, "/paper-trade-mark/");
+    assert_eq!(
+        fs::read_to_string(candidate_file)
+            .expect("candidate output exists")
+            .lines()
+            .count(),
+        31
+    );
+    assert_eq!(
+        fs::read_to_string(run_file)
+            .expect("run output exists")
+            .lines()
+            .count(),
+        31
+    );
+    assert_eq!(
+        fs::read_to_string(summary_file)
+            .expect("summary output exists")
+            .lines()
+            .count(),
+        31
+    );
+    assert_eq!(
+        fs::read_to_string(mark_file)
+            .expect("mark output exists")
+            .lines()
+            .count(),
+        31
+    );
+    let registry_file = output_file_containing(&summary, "/research-aggregate-registry/");
+    let registry_text = fs::read_to_string(&registry_file).expect("registry output exists");
+    let registry: Value = serde_json::from_str(
+        registry_text
+            .lines()
+            .next()
+            .expect("registry output has one line"),
+    )
+    .expect("registry line parses");
+    assert_eq!(
+        registry["current_research_stage"],
+        json!("paper_candidate_bias")
+    );
+    let report_text = serde_json::to_string(&report).expect("report serializes");
+    assert!(!report_text.contains("EXECUTION_APPROVED"));
+    assert!(!report_text.contains("LIVE_READY"));
+}
+
+#[tokio::test]
 async fn portfolio_rejects_critical_event_symbol_and_emits_reduce_only() {
     let root = test_root("portfolio-critical");
     let input = root.join("bundles.json");
@@ -833,8 +1044,11 @@ async fn portfolio_rejects_critical_event_symbol_and_emits_reduce_only() {
         historical_replay_run_files: Vec::new(),
         historical_replay_run_index_files: Vec::new(),
         oss_adapter_run_files: Vec::new(),
+        shadow_validation_run_files: Vec::new(),
         oss_adapter_run_s3_bucket: None,
         oss_adapter_run_s3_keys: Vec::new(),
+        shadow_validation_run_s3_bucket: None,
+        shadow_validation_run_s3_keys: Vec::new(),
         historical_replay_run_s3_bucket: None,
         historical_replay_run_s3_keys: Vec::new(),
         historical_replay_run_index_s3_bucket: None,
@@ -916,8 +1130,11 @@ async fn historical_replay_runs_are_loaded_into_decay_aware_aggregate() {
         historical_replay_run_files: Vec::new(),
         historical_replay_run_index_files: Vec::new(),
         oss_adapter_run_files: Vec::new(),
+        shadow_validation_run_files: Vec::new(),
         oss_adapter_run_s3_bucket: None,
         oss_adapter_run_s3_keys: Vec::new(),
+        shadow_validation_run_s3_bucket: None,
+        shadow_validation_run_s3_keys: Vec::new(),
         historical_replay_run_s3_bucket: None,
         historical_replay_run_s3_keys: Vec::new(),
         historical_replay_run_index_s3_bucket: None,
@@ -978,8 +1195,11 @@ async fn historical_replay_runs_are_loaded_into_decay_aware_aggregate() {
         historical_replay_run_files: Vec::new(),
         historical_replay_run_index_files: vec![history_index_file],
         oss_adapter_run_files: Vec::new(),
+        shadow_validation_run_files: Vec::new(),
         oss_adapter_run_s3_bucket: None,
         oss_adapter_run_s3_keys: Vec::new(),
+        shadow_validation_run_s3_bucket: None,
+        shadow_validation_run_s3_keys: Vec::new(),
         historical_replay_run_s3_bucket: None,
         historical_replay_run_s3_keys: Vec::new(),
         historical_replay_run_index_s3_bucket: None,
@@ -1073,8 +1293,11 @@ async fn expired_historical_replay_runs_are_excluded_from_promotion_gate() {
         historical_replay_run_files: Vec::new(),
         historical_replay_run_index_files: Vec::new(),
         oss_adapter_run_files: Vec::new(),
+        shadow_validation_run_files: Vec::new(),
         oss_adapter_run_s3_bucket: None,
         oss_adapter_run_s3_keys: Vec::new(),
+        shadow_validation_run_s3_bucket: None,
+        shadow_validation_run_s3_keys: Vec::new(),
         historical_replay_run_s3_bucket: None,
         historical_replay_run_s3_keys: Vec::new(),
         historical_replay_run_index_s3_bucket: None,
@@ -1133,8 +1356,11 @@ async fn expired_historical_replay_runs_are_excluded_from_promotion_gate() {
         historical_replay_run_files: vec![history_replay_file],
         historical_replay_run_index_files: Vec::new(),
         oss_adapter_run_files: Vec::new(),
+        shadow_validation_run_files: Vec::new(),
         oss_adapter_run_s3_bucket: None,
         oss_adapter_run_s3_keys: Vec::new(),
+        shadow_validation_run_s3_bucket: None,
+        shadow_validation_run_s3_keys: Vec::new(),
         historical_replay_run_s3_bucket: None,
         historical_replay_run_s3_keys: Vec::new(),
         historical_replay_run_index_s3_bucket: None,
@@ -1197,8 +1423,11 @@ async fn lookahead_mismatch_is_invalid_input() {
         historical_replay_run_files: Vec::new(),
         historical_replay_run_index_files: Vec::new(),
         oss_adapter_run_files: Vec::new(),
+        shadow_validation_run_files: Vec::new(),
         oss_adapter_run_s3_bucket: None,
         oss_adapter_run_s3_keys: Vec::new(),
+        shadow_validation_run_s3_bucket: None,
+        shadow_validation_run_s3_keys: Vec::new(),
         historical_replay_run_s3_bucket: None,
         historical_replay_run_s3_keys: Vec::new(),
         historical_replay_run_index_s3_bucket: None,
@@ -1241,8 +1470,11 @@ async fn report_id_and_output_key_are_stable_without_now_ms() {
         historical_replay_run_files: Vec::new(),
         historical_replay_run_index_files: Vec::new(),
         oss_adapter_run_files: Vec::new(),
+        shadow_validation_run_files: Vec::new(),
         oss_adapter_run_s3_bucket: None,
         oss_adapter_run_s3_keys: Vec::new(),
+        shadow_validation_run_s3_bucket: None,
+        shadow_validation_run_s3_keys: Vec::new(),
         historical_replay_run_s3_bucket: None,
         historical_replay_run_s3_keys: Vec::new(),
         historical_replay_run_index_s3_bucket: None,
@@ -1291,10 +1523,20 @@ fn output_partition_uses_execution_time_without_rewriting_report_time() {
     let bundles = vec![
         serde_json::from_value(bundle_json()).expect("candidate bundle test json matches model"),
     ];
-    let report = crate::report::build_report("packet_test", "test", 7_200_000, &bundles, &[], &[]);
+    let report =
+        crate::report::build_report("packet_test", "test", 7_200_000, &bundles, &[], &[], &[]);
 
-    let written =
-        crate::io::write_research_outputs(&root, &report, &[], &[], 3_600_000).expect("write ok");
+    let output_artifacts = crate::io::ResearchOutputArtifacts {
+        report: &report,
+        replay_runs: &[],
+        shadow_validation_runs: &[],
+        paper_trade_candidates: &[],
+        paper_trade_runs: &[],
+        paper_trade_summaries: &[],
+        paper_trade_marks: &[],
+        output_partition_at_ms: 3_600_000,
+    };
+    let written = crate::io::write_research_outputs(&root, &output_artifacts).expect("write ok");
 
     let relative = written[0]
         .strip_prefix(&root)
@@ -1377,8 +1619,11 @@ async fn manifest_batch_input_processes_multiple_candidate_refs() {
         historical_replay_run_files: Vec::new(),
         historical_replay_run_index_files: Vec::new(),
         oss_adapter_run_files: Vec::new(),
+        shadow_validation_run_files: Vec::new(),
         oss_adapter_run_s3_bucket: None,
         oss_adapter_run_s3_keys: Vec::new(),
+        shadow_validation_run_s3_bucket: None,
+        shadow_validation_run_s3_keys: Vec::new(),
         historical_replay_run_s3_bucket: None,
         historical_replay_run_s3_keys: Vec::new(),
         historical_replay_run_index_s3_bucket: None,
@@ -1453,8 +1698,11 @@ async fn manifest_runtime_budget_blocks_oversized_batch() {
         historical_replay_run_files: Vec::new(),
         historical_replay_run_index_files: Vec::new(),
         oss_adapter_run_files: Vec::new(),
+        shadow_validation_run_files: Vec::new(),
         oss_adapter_run_s3_bucket: None,
         oss_adapter_run_s3_keys: Vec::new(),
+        shadow_validation_run_s3_bucket: None,
+        shadow_validation_run_s3_keys: Vec::new(),
         historical_replay_run_s3_bucket: None,
         historical_replay_run_s3_keys: Vec::new(),
         historical_replay_run_index_s3_bucket: None,
@@ -1525,8 +1773,11 @@ fn derives_market_l1_s3_keys_from_candidate_bundle() {
         historical_replay_run_files: Vec::new(),
         historical_replay_run_index_files: Vec::new(),
         oss_adapter_run_files: Vec::new(),
+        shadow_validation_run_files: Vec::new(),
         oss_adapter_run_s3_bucket: None,
         oss_adapter_run_s3_keys: Vec::new(),
+        shadow_validation_run_s3_bucket: None,
+        shadow_validation_run_s3_keys: Vec::new(),
         historical_replay_run_s3_bucket: None,
         historical_replay_run_s3_keys: Vec::new(),
         historical_replay_run_index_s3_bucket: None,

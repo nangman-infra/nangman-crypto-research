@@ -1,14 +1,15 @@
 use crate::artifacts::{build_replay_run_index_records, build_research_aggregate_registry_records};
 use crate::error::{AppError, AppResult};
 use crate::io::{
-    read_candidate_bundles_from_bytes, read_market_feature_deltas_from_bytes,
-    read_market_regime_contexts_from_bytes, read_oss_adapter_runs_from_bytes,
-    read_replay_run_index_records_from_bytes, read_replay_runs_from_bytes,
-    read_research_input_manifest_from_bytes,
+    ResearchOutputArtifacts, read_candidate_bundles_from_bytes,
+    read_market_feature_deltas_from_bytes, read_market_regime_contexts_from_bytes,
+    read_oss_adapter_runs_from_bytes, read_replay_run_index_records_from_bytes,
+    read_replay_runs_from_bytes, read_research_input_manifest_from_bytes,
+    read_shadow_validation_runs_from_bytes,
 };
 use crate::model::{
     IntelCandidateEvidenceBundle, MarketFeatureDelta, MarketRegimeContext, OssAdapterRun,
-    ReplayRun, ReplayRunIndexRecord, ResearchInputManifest, ResearchRunReport, ShadowValidationRun,
+    ReplayRun, ReplayRunIndexRecord, ResearchInputManifest, ShadowValidationRun,
 };
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::Client;
@@ -121,13 +122,26 @@ pub async fn read_oss_adapter_runs_from_s3(
     Ok(runs)
 }
 
+pub async fn read_shadow_validation_runs_from_s3(
+    bucket: &str,
+    keys: &[String],
+) -> AppResult<Vec<ShadowValidationRun>> {
+    let client = s3_client().await;
+    let mut runs = Vec::new();
+    for key in keys {
+        let bytes = get_object_bytes(&client, bucket, key).await?;
+        runs.extend(read_shadow_validation_runs_from_bytes(
+            &format!("s3://{bucket}/{key}"),
+            bytes.as_ref(),
+        )?);
+    }
+    Ok(runs)
+}
+
 pub async fn write_research_outputs_to_s3(
     bucket: &str,
     prefix: &str,
-    report: &ResearchRunReport,
-    replay_runs: &[ReplayRun],
-    shadow_validation_runs: &[ShadowValidationRun],
-    output_partition_at_ms: i64,
+    artifacts: &ResearchOutputArtifacts<'_>,
 ) -> AppResult<Vec<String>> {
     if bucket.trim().is_empty() {
         return Err(AppError::config(
@@ -136,7 +150,8 @@ pub async fn write_research_outputs_to_s3(
     }
     let client = s3_client().await;
     let mut written = Vec::new();
-    let dt = partition(output_partition_at_ms)?;
+    let report = artifacts.report;
+    let dt = partition(artifacts.output_partition_at_ms)?;
     let prefix = normalize_prefix(prefix);
     let report_key = format!(
         "{prefix}research-run-report/schema={}/dt={}/hour={:02}/research_run_report_id={}/report.json",
@@ -145,13 +160,16 @@ pub async fn write_research_outputs_to_s3(
     put_object_json(&client, bucket, &report_key, report).await?;
     written.push(format!("s3://{bucket}/{report_key}"));
 
-    if !replay_runs.is_empty() {
+    if !artifacts.replay_runs.is_empty() {
         let replay_key = format!(
             "{prefix}replay-run/schema={}/dt={}/hour={:02}/research_run_report_id={}/part-000001.jsonl",
-            replay_runs[0].schema_version, dt.date, dt.hour, report.research_run_report_id
+            artifacts.replay_runs[0].schema_version,
+            dt.date,
+            dt.hour,
+            report.research_run_report_id
         );
         let mut body = Vec::new();
-        for run in replay_runs {
+        for run in artifacts.replay_runs {
             serde_json::to_writer(&mut body, run)?;
             body.push(b'\n');
         }
@@ -161,7 +179,7 @@ pub async fn write_research_outputs_to_s3(
         let replay_run_uri = format!("s3://{bucket}/{replay_key}");
         let replay_run_index_records = build_replay_run_index_records(
             report,
-            replay_runs,
+            artifacts.replay_runs,
             &replay_run_uri,
             Some(bucket),
             Some(&replay_key),
@@ -189,21 +207,81 @@ pub async fn write_research_outputs_to_s3(
         written.push(format!("s3://{bucket}/{replay_index_key}"));
     }
 
-    if !shadow_validation_runs.is_empty() {
+    if !artifacts.shadow_validation_runs.is_empty() {
         let shadow_key = format!(
             "{prefix}shadow-validation-run/schema={}/dt={}/hour={:02}/research_run_report_id={}/part-000001.jsonl",
-            shadow_validation_runs[0].schema_version,
+            artifacts.shadow_validation_runs[0].schema_version,
             dt.date,
             dt.hour,
             report.research_run_report_id
         );
         let mut body = Vec::new();
-        for run in shadow_validation_runs {
+        for run in artifacts.shadow_validation_runs {
             serde_json::to_writer(&mut body, run)?;
             body.push(b'\n');
         }
         put_object_bytes(&client, bucket, &shadow_key, body, "application/x-ndjson").await?;
         written.push(format!("s3://{bucket}/{shadow_key}"));
+    }
+
+    if !artifacts.paper_trade_candidates.is_empty() {
+        let candidate_key = format!(
+            "{prefix}paper-trade-candidate/schema={}/dt={}/hour={:02}/research_run_report_id={}/part-000001.jsonl",
+            artifacts.paper_trade_candidates[0].schema_version,
+            dt.date,
+            dt.hour,
+            report.research_run_report_id
+        );
+        put_jsonl_object(
+            &client,
+            bucket,
+            &candidate_key,
+            artifacts.paper_trade_candidates,
+        )
+        .await?;
+        written.push(format!("s3://{bucket}/{candidate_key}"));
+    }
+
+    if !artifacts.paper_trade_runs.is_empty() {
+        let run_key = format!(
+            "{prefix}paper-trade-run/schema={}/dt={}/hour={:02}/research_run_report_id={}/part-000001.jsonl",
+            artifacts.paper_trade_runs[0].schema_version,
+            dt.date,
+            dt.hour,
+            report.research_run_report_id
+        );
+        put_jsonl_object(&client, bucket, &run_key, artifacts.paper_trade_runs).await?;
+        written.push(format!("s3://{bucket}/{run_key}"));
+    }
+
+    if !artifacts.paper_trade_summaries.is_empty() {
+        let summary_key = format!(
+            "{prefix}paper-trade-summary/schema={}/dt={}/hour={:02}/research_run_report_id={}/part-000001.jsonl",
+            artifacts.paper_trade_summaries[0].schema_version,
+            dt.date,
+            dt.hour,
+            report.research_run_report_id
+        );
+        put_jsonl_object(
+            &client,
+            bucket,
+            &summary_key,
+            artifacts.paper_trade_summaries,
+        )
+        .await?;
+        written.push(format!("s3://{bucket}/{summary_key}"));
+    }
+
+    if !artifacts.paper_trade_marks.is_empty() {
+        let mark_key = format!(
+            "{prefix}paper-trade-mark/schema={}/dt={}/hour={:02}/research_run_report_id={}/part-000001.jsonl",
+            artifacts.paper_trade_marks[0].schema_version,
+            dt.date,
+            dt.hour,
+            report.research_run_report_id
+        );
+        put_jsonl_object(&client, bucket, &mark_key, artifacts.paper_trade_marks).await?;
+        written.push(format!("s3://{bucket}/{mark_key}"));
     }
 
     if let Some(snapshot) = report.portfolio_allocation_snapshot.as_ref() {
@@ -369,6 +447,23 @@ where
 {
     let body = serde_json::to_vec_pretty(value)?;
     put_object_bytes(client, bucket, key, body, "application/json").await
+}
+
+async fn put_jsonl_object<T>(
+    client: &Client,
+    bucket: &str,
+    key: &str,
+    values: &[T],
+) -> AppResult<()>
+where
+    T: serde::Serialize,
+{
+    let mut body = Vec::new();
+    for value in values {
+        serde_json::to_writer(&mut body, value)?;
+        body.push(b'\n');
+    }
+    put_object_bytes(client, bucket, key, body, "application/x-ndjson").await
 }
 
 async fn put_object_bytes(
