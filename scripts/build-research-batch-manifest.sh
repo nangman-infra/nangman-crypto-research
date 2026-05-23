@@ -362,6 +362,38 @@ jq -s -c \
     def all_symbols_in($allowed):
       (.symbols | length) > 0
       and all(.symbols[]; . as $symbol | ($allowed | index($symbol)));
+    def horizon_ms($h):
+      if $h == "15m" then 900000
+      elif $h == "1h" then 3600000
+      elif $h == "4h" then 14400000
+      elif $h == "24h" then 86400000
+      elif $h == "72h" then 259200000
+      elif $h == "7d" then 604800000
+      else null
+      end;
+    def absolute_max_horizon_ms: 259200000;
+    def horizon_contract_valid:
+      (.allowed_horizons // []) as $horizons
+      | ($horizons | length) > 0
+        and all($horizons[]; (horizon_ms(.) != null and horizon_ms(.) <= absolute_max_horizon_ms));
+    def horizon_contract_reasons:
+      (.allowed_horizons // []) as $horizons
+      | (
+          if ($horizons | length) == 0
+          then ["missing_allowed_horizons"]
+          else []
+          end
+        )
+        + [
+          $horizons[]
+          | select(horizon_ms(.) == null)
+          | "unsupported_horizon:" + .
+        ]
+        + [
+          $horizons[]
+          | select((horizon_ms(.) // 0) > absolute_max_horizon_ms)
+          | "holding_horizon_contract_violation:" + .
+        ];
 
     map(select(.candidate_id != null and .research_eligible == true))
     | map(. + {
@@ -370,7 +402,9 @@ jq -s -c \
         current_universe_observed:all_symbols_in($universe.observed_symbols // []),
         current_universe_approved:all_symbols_in($universe.approved_symbols // []),
         bundle_current_universe_match:(.symbol_universe_snapshot_id == ($universe.symbol_universe_snapshot_id // null)),
-        universe_selection_mode:$mode
+        universe_selection_mode:$mode,
+        batch_horizon_contract_valid:horizon_contract_valid,
+        batch_horizon_contract_reasons:horizon_contract_reasons
       })
   ' "$candidate_records_json" > "$all_candidates_json"
 
@@ -378,7 +412,8 @@ jq -c \
   --arg mode "$UNIVERSE_MODE" \
   --argjson max "$MAX_CANDIDATE_BUNDLE_COUNT" '
     map(select(
-      if $mode == "current_approved" then .current_universe_approved == true
+      .batch_horizon_contract_valid == true
+      and if $mode == "current_approved" then .current_universe_approved == true
       elif $mode == "current_observed" then .current_universe_observed == true
       elif $mode == "legacy_retest" then .research_eligible == true
       else false
@@ -428,7 +463,21 @@ if [[ "$selected_candidate_count" == "0" ]]; then
       current_observed_candidate_count:([$candidates[] | select(.current_universe_observed == true)] | length),
       current_approved_candidate_count:([$candidates[] | select(.current_universe_approved == true)] | length),
       legacy_bundle_approved_candidate_count:([$candidates[] | select(.approved_universe_symbol == true)] | length),
-      blocked_reason:"no_candidates_match_universe_mode"
+      horizon_contract_valid_candidate_count:([$candidates[] | select(.batch_horizon_contract_valid == true)] | length),
+      horizon_contract_invalid_candidate_count:([$candidates[] | select(.batch_horizon_contract_valid != true)] | length),
+      excluded_horizon_contract_violations:(
+        [$candidates[] | select(.batch_horizon_contract_valid != true)]
+        | map({
+            candidate_id,
+            symbols,
+            allowed_horizons,
+            reasons:.batch_horizon_contract_reasons,
+            last_modified,
+            key
+          })
+        | .[0:20]
+      ),
+      blocked_reason:"no_candidates_match_universe_mode_or_horizon_contract"
     }' > "$SUMMARY_OUTPUT"
   jq -n \
     --arg research_packet_id "$RESEARCH_PACKET_ID" \
@@ -461,6 +510,7 @@ if [[ "$selected_candidate_count" == "0" ]]; then
       "current_observed_candidate_count=\(.current_observed_candidate_count)",
       "current_approved_candidate_count=\(.current_approved_candidate_count)",
       "legacy_bundle_approved_candidate_count=\(.legacy_bundle_approved_candidate_count)",
+      "horizon_contract_invalid_candidate_count=\(.horizon_contract_invalid_candidate_count)",
       "blocked_reason=\(.blocked_reason)"
     ' "$SUMMARY_OUTPUT"
   } | redact
@@ -551,8 +601,23 @@ jq -n \
     approved_bundle_candidate_count:([$candidates[] | select(.approved_universe_symbol == true)] | length),
     current_observed_candidate_count:([$scanned_candidates[] | select(.current_universe_observed == true)] | length),
     current_approved_candidate_count:([$scanned_candidates[] | select(.current_universe_approved == true)] | length),
+    horizon_contract_valid_candidate_count:([$scanned_candidates[] | select(.batch_horizon_contract_valid == true)] | length),
+    horizon_contract_invalid_candidate_count:([$scanned_candidates[] | select(.batch_horizon_contract_valid != true)] | length),
+    excluded_horizon_contract_violations:(
+      [$scanned_candidates[] | select(.batch_horizon_contract_valid != true)]
+      | map({
+          candidate_id,
+          symbols,
+          allowed_horizons,
+          reasons:.batch_horizon_contract_reasons,
+          last_modified,
+          key
+        })
+      | .[0:20]
+    ),
     selected_current_observed_candidate_count:([$candidates[] | select(.current_universe_observed == true)] | length),
     selected_current_approved_candidate_count:([$candidates[] | select(.current_universe_approved == true)] | length),
+    selected_horizon_contract_valid_count:([$candidates[] | select(.batch_horizon_contract_valid == true)] | length),
     selected_bundle_current_universe_match_count:([$candidates[] | select(.bundle_current_universe_match == true)] | length),
     historical_replay_run_index_ref_count:($indexes | length),
     selected_candidates:($candidates | map({
@@ -565,6 +630,7 @@ jq -n \
       current_universe_observed,
       current_universe_approved,
       bundle_current_universe_match,
+      batch_horizon_contract_valid,
       last_modified,
       key
     }))
@@ -580,7 +646,9 @@ jq -n \
     "universe_mode=\(.universe_mode)",
     "current_observed_candidate_count=\(.current_observed_candidate_count)",
     "current_approved_candidate_count=\(.current_approved_candidate_count)",
+    "horizon_contract_invalid_candidate_count=\(.horizon_contract_invalid_candidate_count)",
     "selected_current_approved_candidate_count=\(.selected_current_approved_candidate_count)",
+    "selected_horizon_contract_valid_count=\(.selected_horizon_contract_valid_count)",
     "historical_replay_run_index_ref_count=\(.historical_replay_run_index_ref_count)",
     "safety=s3_write:\(.safety.s3_write),ecs_task_started:\(.safety.ecs_task_started),dispatcher_mode_changed:\(.safety.dispatcher_mode_changed)"
   ' "$SUMMARY_OUTPUT"

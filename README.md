@@ -94,6 +94,13 @@ from looking like current promotion-safe input. For diagnostic replay only, use
 `RESEARCH_BATCH_UNIVERSE_MODE=legacy_retest`; that mode must not be used as
 promotion evidence.
 
+The builder also enforces the current research holding horizon contract before
+selecting a bundle. Stale candidate bundles with unsupported or over-limit
+`allowed_horizons` are excluded from the local manifest and counted in
+`horizon_contract_invalid_candidate_count` with
+`excluded_horizon_contract_violations[]`; the source S3 objects are not
+modified.
+
 In ECS, market replay inputs are loaded from Market-L1 S3. The app first uses
 `selected_market_artifacts[].artifact_key` from the candidate bundle, then falls
 back to the sibling keys derived from `market_data_quality_summary/run_id=...`.
