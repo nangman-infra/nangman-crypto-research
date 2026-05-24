@@ -464,6 +464,36 @@ The checkpoint separates:
 The output is local-only. It does not mark shadow as completed, does not write
 S3, does not start ECS tasks, and does not create paper/live artifacts.
 
+## Shadow Sample Gap Manifest
+
+Use the shadow sample gap manifest after `shadow-observation-plan.json` exists.
+It turns the observation plan into a candidate backlog: which promoted
+candidates still need more shadow observation samples before any completed
+shadow review can feed paper.
+
+```bash
+cd /Volumes/WD/Developments/nangman-crypto/apps/research-app
+
+RUN_DIR=/tmp/nangman-crypto/research-current-approved-batch/<run-id>
+
+scripts/build-shadow-sample-gap-manifest.sh \
+  "$RUN_DIR/shadow-observation-plan.json" \
+  > "$RUN_DIR/shadow-sample-gap-manifest.json"
+```
+
+The manifest separates:
+
+```text
+- total_sample_deficit: missing shadow observations across promoted candidates
+- shadow_sample_backlog: candidate-level required/observed/deficit counts
+- sample_ready_candidates: candidates whose sample requirement is met
+- next_decision.verdict: whether to wait, accumulate samples, or review completion evidence
+- blocked_actions: shadow/paper/live actions that must remain closed
+```
+
+The output is local-only. It does not mutate shadow status, does not write S3,
+does not start ECS tasks, and does not create paper/live artifacts.
+
 ## Market-L1 Coverage Gap Diagnosis
 
 Use the Market-L1 coverage gap diagnosis when the retest horizon status reports
