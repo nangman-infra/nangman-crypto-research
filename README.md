@@ -762,11 +762,12 @@ probe. If diagnosis refs are object keys instead of `s3://` URIs, the script
 infers the candidate bucket from the source manifest. Without a source manifest,
 set `RESEARCH_SOURCE_GAP_CANDIDATE_S3_BUCKET=<candidate-bucket>`.
 
-`RESEARCH_SOURCE_GAP_INCLUDE_HISTORICAL_INDEX_REFS` defaults to `auto`: it
-carries historical replay indexes only when the source manifest has them. Set it
-to `false` for current-run-only replay. The summary reports whether it used full
-`evidence_refs` or limited `sample_evidence_refs`; limited refs are enough for a
-focused probe but should not be mistaken for complete major-50 coverage.
+`RESEARCH_SOURCE_GAP_INCLUDE_HISTORICAL_INDEX_REFS` defaults to `false` so a
+symbol-focused source-gap replay does not mix unrelated historical aggregate
+registry rows into the local report. Set it to `true` only when intentionally
+accumulating historical replay evidence. The summary reports whether it used
+full `evidence_refs` or limited `sample_evidence_refs`; limited refs are enough
+for a focused probe but should not be mistaken for complete major-50 coverage.
 
 ## Post-Activation Runtime Check
 
