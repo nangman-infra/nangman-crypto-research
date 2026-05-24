@@ -485,11 +485,15 @@ The manifest separates:
 
 ```text
 - total_sample_deficit: missing shadow observations across promoted candidates
-- shadow_sample_backlog: candidate-level required/observed/deficit counts
+- shadow_sample_backlog: candidate-level required/materialized/deficit counts
 - sample_ready_candidates: candidates whose sample requirement is met
 - next_decision.verdict: whether to wait, accumulate samples, or review completion evidence
 - blocked_actions: shadow/paper/live actions that must remain closed
 ```
+
+Only target-window-materialized shadow runs count toward the sample requirement.
+A newly created pending shadow run is not a paper-ready sample until its target
+holding window has enough Market-L1 coverage.
 
 The output is local-only. It does not mutate shadow status, does not write S3,
 does not start ECS tasks, and does not create paper/live artifacts.

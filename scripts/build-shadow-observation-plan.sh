@@ -159,13 +159,20 @@ jq -s \
     def max_required_shadow_samples($runs):
       ($runs | map(.watch_window_policy.min_shadow_samples // 0) | max // 0);
     def sample_status($runs):
-      ($runs | length) as $count
+      ($runs | length) as $observed_count
+      | ($runs | map(select(target_window_materialized)) | length) as $materialized_count
       | max_required_shadow_samples($runs) as $required
       | {
-          observed_shadow_run_count:$count,
+          observed_shadow_run_count:$observed_count,
+          target_window_materialized_shadow_run_count:$materialized_count,
           required_shadow_sample_count:$required,
-          sample_requirement_met:($required > 0 and $count >= $required),
-          sample_deficit:(if $count >= $required then 0 else ($required - $count) end)
+          sample_requirement_basis:"target_window_materialized_shadow_run_count",
+          sample_requirement_met:($required > 0 and $materialized_count >= $required),
+          sample_deficit:(
+            if $materialized_count >= $required then 0
+            else ($required - $materialized_count)
+            end
+          )
         };
     def run_projection:
       decision_available_at_ms as $decision_ms

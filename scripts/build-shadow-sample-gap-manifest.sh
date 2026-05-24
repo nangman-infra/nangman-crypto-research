@@ -51,7 +51,9 @@ jq \
           target_window_materialized_count:(.target_window_materialized_count // 0),
           absolute_window_materialized_count:(.absolute_window_materialized_count // 0),
           observed_shadow_run_count:($sample.observed_shadow_run_count // 0),
+          target_window_materialized_shadow_run_count:($sample.target_window_materialized_shadow_run_count // 0),
           required_shadow_sample_count:($sample.required_shadow_sample_count // 0),
+          sample_requirement_basis:($sample.sample_requirement_basis // "target_window_materialized_shadow_run_count"),
           sample_requirement_met:($sample.sample_requirement_met // false),
           sample_deficit:($sample.sample_deficit // 0),
           recommended_action:(
@@ -94,6 +96,11 @@ jq \
           symbols:($candidates | map(.symbols // []) | flatten | unique_sorted),
           pending_candidate_count:($pending | length),
           target_window_waiting_candidate_count:($target_waiting | length),
+          partially_materialized_candidate_count:(
+            $candidates
+            | map(select(.target_window_materialized_count > 0 and .target_window_materialized_shadow_run_count < .observed_shadow_run_count))
+            | length
+          ),
           sample_requirement_met_candidate_count:($sample_ready | length),
           deficient_candidate_count:($deficient | length),
           total_sample_deficit:(($deficient | map(.sample_deficit) | add) // 0),
