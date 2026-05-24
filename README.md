@@ -600,7 +600,11 @@ deadline instead of spinning the research loop immediately.
 The decision file is the smallest machine-readable scheduler handoff. It maps
 the cycle verdict to `scheduler_action`, `run_not_before_ms`, and the focused
 research manifest path when another local research pass is safe to prepare. It
-is still local-only and keeps paper/live/order execution disabled.
+is still local-only and keeps paper/live/order execution disabled. The Rust
+contract type is `ShadowCycleDecision`, and
+`validate_shadow_cycle_decision` rejects wait decisions without
+`run_not_before_ms`, focused research decisions without an absolute manifest
+path, and any decision that enables paper/live/order execution.
 
 The cycle is local-only. It does not run ECS, switch the dispatcher, mutate
 shadow status, or create paper/live artifacts.

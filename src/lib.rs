@@ -13,5 +13,6 @@ pub mod paper;
 pub mod portfolio;
 pub mod replay;
 pub mod report;
+pub mod shadow_cycle;
 pub mod storage;
 pub mod time;
