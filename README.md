@@ -590,11 +590,17 @@ The driver writes:
 - shadow-sample-gap-manifest.cycle.json
 - shadow-accumulation-input-manifest.next.json, only when the gap verdict needs more samples now
 - shadow-sample-accumulation-cycle-summary.json
+- shadow-cycle-decision.json
 ```
 
 The cycle summary carries `next_decision.next_observation_not_before_ms` from
 the gap manifest so a scheduler can wait until the next pending target window
 deadline instead of spinning the research loop immediately.
+
+The decision file is the smallest machine-readable scheduler handoff. It maps
+the cycle verdict to `scheduler_action`, `run_not_before_ms`, and the focused
+research manifest path when another local research pass is safe to prepare. It
+is still local-only and keeps paper/live/order execution disabled.
 
 The cycle is local-only. It does not run ECS, switch the dispatcher, mutate
 shadow status, or create paper/live artifacts.

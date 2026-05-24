@@ -19,6 +19,7 @@ GAP_MANIFEST_FILE="${RESEARCH_SHADOW_CYCLE_GAP_MANIFEST_FILE:-${RUN_DIR%/}/shado
 ACCUMULATION_MANIFEST_FILE="${RESEARCH_SHADOW_CYCLE_ACCUMULATION_MANIFEST_FILE:-${RUN_DIR%/}/shadow-accumulation-input-manifest.next.json}"
 ACCUMULATION_SUMMARY_FILE="${RESEARCH_SHADOW_CYCLE_ACCUMULATION_SUMMARY_FILE:-${RUN_DIR%/}/shadow-accumulation-input-manifest.next.summary.json}"
 CYCLE_SUMMARY_FILE="${RESEARCH_SHADOW_CYCLE_SUMMARY_FILE:-${RUN_DIR%/}/shadow-sample-accumulation-cycle-summary.json}"
+DECISION_FILE="${RESEARCH_SHADOW_CYCLE_DECISION_FILE:-${RUN_DIR%/}/shadow-cycle-decision.json}"
 LATEST_L1_AS_OF_MS="${RESEARCH_SHADOW_CYCLE_LATEST_L1_AS_OF_MS:-}"
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -84,6 +85,7 @@ require_absolute_path "RESEARCH_SHADOW_CYCLE_GAP_MANIFEST_FILE" "$GAP_MANIFEST_F
 require_absolute_path "RESEARCH_SHADOW_CYCLE_ACCUMULATION_MANIFEST_FILE" "$ACCUMULATION_MANIFEST_FILE"
 require_absolute_path "RESEARCH_SHADOW_CYCLE_ACCUMULATION_SUMMARY_FILE" "$ACCUMULATION_SUMMARY_FILE"
 require_absolute_path "RESEARCH_SHADOW_CYCLE_SUMMARY_FILE" "$CYCLE_SUMMARY_FILE"
+require_absolute_path "RESEARCH_SHADOW_CYCLE_DECISION_FILE" "$DECISION_FILE"
 positive_or_empty_integer_arg "RESEARCH_SHADOW_CYCLE_LATEST_L1_AS_OF_MS" "$LATEST_L1_AS_OF_MS"
 
 mkdir -p \
@@ -92,7 +94,8 @@ mkdir -p \
   "$(dirname "$GAP_MANIFEST_FILE")" \
   "$(dirname "$ACCUMULATION_MANIFEST_FILE")" \
   "$(dirname "$ACCUMULATION_SUMMARY_FILE")" \
-  "$(dirname "$CYCLE_SUMMARY_FILE")"
+  "$(dirname "$CYCLE_SUMMARY_FILE")" \
+  "$(dirname "$DECISION_FILE")"
 
 shadow_files_tmp="$(mktemp)"
 shadow_files_json_tmp="$(mktemp)"
@@ -169,6 +172,7 @@ if [[ "$accumulation_created" == true ]]; then
     --arg accumulation_manifest_file "$ACCUMULATION_MANIFEST_FILE" \
     --arg accumulation_summary_file "$ACCUMULATION_SUMMARY_FILE" \
     --arg cycle_summary_file "$CYCLE_SUMMARY_FILE" \
+    --arg decision_file "$DECISION_FILE" \
     --arg latest_l1_as_of_ms "$LATEST_L1_AS_OF_MS" \
     --argjson shadow_input_files "$(cat "$shadow_files_json_tmp")" \
     --slurpfile merge_summary "$MERGED_SHADOW_SUMMARY_FILE" \
@@ -188,6 +192,7 @@ if [[ "$accumulation_created" == true ]]; then
       accumulation_manifest_file:$accumulation_manifest_file,
       accumulation_summary_file:$accumulation_summary_file,
       cycle_summary_file:$cycle_summary_file,
+      decision_file:$decision_file,
       latest_l1_as_of_ms:(if $latest_l1_as_of_ms == "" then null else ($latest_l1_as_of_ms | tonumber) end),
       safety:{
         s3_write:false,
@@ -225,6 +230,7 @@ else
     --arg observation_plan_file "$OBSERVATION_PLAN_FILE" \
     --arg gap_manifest_file "$GAP_MANIFEST_FILE" \
     --arg cycle_summary_file "$CYCLE_SUMMARY_FILE" \
+    --arg decision_file "$DECISION_FILE" \
     --arg latest_l1_as_of_ms "$LATEST_L1_AS_OF_MS" \
     --argjson shadow_input_files "$(cat "$shadow_files_json_tmp")" \
     --slurpfile merge_summary "$MERGED_SHADOW_SUMMARY_FILE" \
@@ -243,6 +249,7 @@ else
       accumulation_manifest_file:null,
       accumulation_summary_file:null,
       cycle_summary_file:$cycle_summary_file,
+      decision_file:$decision_file,
       latest_l1_as_of_ms:(if $latest_l1_as_of_ms == "" then null else ($latest_l1_as_of_ms | tonumber) end),
       safety:{
         s3_write:false,
@@ -267,16 +274,98 @@ else
     }' > "$CYCLE_SUMMARY_FILE"
 fi
 
+jq -n \
+  --arg generated_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  --slurpfile cycle "$CYCLE_SUMMARY_FILE" \
+  '
+    def scheduler_action($verdict):
+      if $verdict == "DISCOVER_LATEST_MARKET_L1_AS_OF" then "DISCOVER_MARKET_L1_WATERMARK"
+      elif $verdict == "WAIT_FOR_TARGET_HOLDING_WINDOW" then "WAIT_UNTIL_TARGET_WINDOW_MATERIALIZES"
+      elif $verdict == "WAIT_FOR_PENDING_SHADOW_TARGET_WINDOW_MATERIALIZATION" then "WAIT_UNTIL_PENDING_SHADOW_TARGET_WINDOW_MATERIALIZES"
+      elif $verdict == "ACCUMULATE_SHADOW_SAMPLES_BEFORE_COMPLETION" then "RUN_FOCUSED_SHADOW_SAMPLE_ACCUMULATION_RESEARCH"
+      elif $verdict == "REVIEW_SHADOW_COMPLETION_EVIDENCE" then "REVIEW_SHADOW_COMPLETION_EVIDENCE"
+      elif $verdict == "NO_SHADOW_SAMPLE_GAP_DETECTED" then "NOOP"
+      elif $verdict == "NO_SHADOW_CANDIDATES" then "NOOP"
+      else "HOLD_FOR_OPERATOR_REVIEW" end;
+    def wait_action($action):
+      ($action == "WAIT_UNTIL_TARGET_WINDOW_MATERIALIZES"
+       or $action == "WAIT_UNTIL_PENDING_SHADOW_TARGET_WINDOW_MATERIALIZES");
+
+    ($cycle[0] // {}) as $summary
+    | ($summary.next_decision.verdict // "UNKNOWN") as $verdict
+    | scheduler_action($verdict) as $action
+    | ($summary.next_decision.next_observation_not_before_ms // null) as $not_before_ms
+    | {
+        schema_version:"research_shadow_cycle_decision_v1",
+        generated_at:$generated_at,
+        decision_id:(
+          "shadow_cycle_decision:"
+          + (($summary.run_dir // "unknown") | split("/") | last)
+          + ":"
+          + $verdict
+          + ":"
+          + (($not_before_ms // $summary.latest_l1_as_of_ms // $summary.generated_at // $generated_at) | tostring)
+        ),
+        source_cycle_summary_file:($summary.cycle_summary_file // null),
+        run_dir:($summary.run_dir // null),
+        scheduler_action:$action,
+        source_verdict:$verdict,
+        run_not_before_ms:(if wait_action($action) then $not_before_ms else null end),
+        run_not_before_at:(if wait_action($action) then ($summary.next_decision.next_observation_not_before_at // null) else null end),
+        run_not_before_source:(if wait_action($action) then ($summary.next_decision.next_observation_not_before_source // null) else null end),
+        focused_research_manifest_file:(
+          if $action == "RUN_FOCUSED_SHADOW_SAMPLE_ACCUMULATION_RESEARCH" then $summary.accumulation_manifest_file
+          else null
+          end
+        ),
+        focused_research_summary_file:(
+          if $action == "RUN_FOCUSED_SHADOW_SAMPLE_ACCUMULATION_RESEARCH" then $summary.accumulation_summary_file
+          else null
+          end
+        ),
+        latest_l1_as_of_ms:($summary.latest_l1_as_of_ms // null),
+        shadow_sample_state:{
+          shadow_validation_count:($summary.observation_summary.shadow_validation_count // 0),
+          target_window_materialized_count:($summary.observation_summary.target_window_materialized_count // 0),
+          candidate_lifecycle_count:($summary.gap_summary.candidate_lifecycle_count // 0),
+          partially_materialized_candidate_count:($summary.gap_summary.partially_materialized_candidate_count // 0),
+          pending_target_window_candidate_count:($summary.gap_summary.pending_target_window_candidate_count // 0),
+          total_sample_deficit:($summary.gap_summary.total_sample_deficit // 0),
+          symbols:($summary.gap_summary.symbols // [])
+        },
+        safe_next_actions:($summary.next_decision.safe_next_actions // []),
+        blocked_actions:($summary.next_decision.blocked_actions // []),
+        safety:{
+          s3_write:false,
+          ecs_task_started:false,
+          dispatcher_mode_changed:false,
+          local_decision_only:true,
+          shadow_status_mutated:false,
+          paper_live_enabled:false,
+          live_enabled:false,
+          order_execution_enabled:false
+        }
+      }
+  ' > "$DECISION_FILE"
+
 jq -r '
   "cycle_summary=\(.cycle_summary_file)",
+  "decision_file=\(.decision_file)",
   "shadow_input_file_count=\(.shadow_input_files | length)",
   "merged_record_count=\(.merge_summary.merged_record_count)",
   "target_window_materialized_count=\(.observation_summary.target_window_materialized_count)",
   "total_sample_deficit=\(.gap_summary.total_sample_deficit)",
   "next_verdict=\(.next_decision.verdict)",
+  "next_observation_not_before_ms=\(.next_decision.next_observation_not_before_ms // "none")",
   "accumulation_manifest_file=\(.accumulation_manifest_file // "not_created")",
   "blocked_actions=\(.next_decision.blocked_actions | join(","))",
   "safety=s3_write:\(.safety.s3_write),ecs_task_started:\(.safety.ecs_task_started),dispatcher_mode_changed:\(.safety.dispatcher_mode_changed),shadow_status_mutated:\(.safety.shadow_status_mutated),paper_live_enabled:\(.safety.paper_live_enabled)"
 ' "$CYCLE_SUMMARY_FILE"
+
+jq -r '
+  "scheduler_action=\(.scheduler_action)",
+  "run_not_before_ms=\(.run_not_before_ms // "none")",
+  "focused_research_manifest_file=\(.focused_research_manifest_file // "not_created")"
+' "$DECISION_FILE"
 
 echo "shadow sample accumulation cycle completed" >&2
