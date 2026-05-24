@@ -160,6 +160,48 @@ absent, it exports short-lived CLI-resolved credentials into the child process
 environment so the Rust AWS SDK reads the same authenticated session as the AWS
 CLI. The temporary credential file is removed before research replay starts.
 
+## Current-Approved ECS Dispatch Shards
+
+Use the dispatch shard driver after the dispatcher is intentionally in
+`run_task` mode and the goal is to send the current-approved batch through the
+real S3 notification -> Lambda -> ECS path.
+
+```bash
+cd /Volumes/WD/Developments/nangman-crypto/apps/research-app
+
+AWS_PROFILE=<sso-profile> \
+AWS_REGION=ap-northeast-2 \
+RESEARCH_DISPATCH_SHARD_SIZE=40 \
+scripts/run-current-approved-research-dispatch-shards.sh
+```
+
+The driver keeps the Lambda dispatcher thin. It builds or copies one
+`research_input_manifest_v1`, splits `candidate_bundle_refs[]` into shard
+manifests, uploads each shard under `research-input-manifest/...`, waits for the
+`research-s3-dispatcher` ECS task, and fails immediately if any shard exits
+non-zero. The default shard size is 40 because full current-approved batches can
+exceed the research task memory envelope when historical replay indexes are
+included. Sharding preserves the full candidate set while avoiding one oversized
+task.
+
+Dry-run mode only writes local shard manifests and the summary:
+
+```bash
+RESEARCH_DISPATCH_DRY_RUN=true \
+RESEARCH_DISPATCH_SOURCE_MANIFEST_FILE=/tmp/nangman-crypto/research-current-approved-batch/<run-id>/input-manifest.json \
+scripts/run-current-approved-research-dispatch-shards.sh
+```
+
+Safety boundaries:
+
+```text
+- requires current_approved by default
+- does not change dispatcher mode
+- does not enable shadow, paper, or live
+- does not execute orders
+- writes S3 only by uploading shard manifests and letting research-app write its normal research artifacts
+```
+
 ECS input/output environment:
 
 ```text
