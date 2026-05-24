@@ -509,6 +509,7 @@ The manifest separates:
 - total_sample_deficit: missing shadow observations across promoted candidates
 - shadow_sample_backlog: candidate-level required/materialized/deficit counts
 - sample_ready_candidates: candidates whose sample requirement is met
+- partially_materialized_candidate_count: records that exist but whose later target windows are not fully covered yet
 - next_decision.verdict: whether to wait, accumulate samples, or review completion evidence
 - blocked_actions: shadow/paper/live actions that must remain closed
 ```
@@ -516,6 +517,12 @@ The manifest separates:
 Only target-window-materialized shadow runs count toward the sample requirement.
 A newly created pending shadow run is not a paper-ready sample until its target
 holding window has enough Market-L1 coverage.
+
+If some shadow records are materialized and newer records are still waiting for
+their target window, the manifest reports
+`WAIT_FOR_PENDING_SHADOW_TARGET_WINDOW_MATERIALIZATION`. This prevents the local
+cycle from immediately creating another focused research manifest before the
+already-created pending observations can become valid samples.
 
 The output is local-only. It does not mutate shadow status, does not write S3,
 does not start ECS tasks, and does not create paper/live artifacts.
@@ -578,7 +585,7 @@ The driver writes:
 - shadow-validation-merged.summary.json
 - shadow-observation-plan.cycle.json
 - shadow-sample-gap-manifest.cycle.json
-- shadow-accumulation-input-manifest.next.json, only when the gap verdict needs more samples
+- shadow-accumulation-input-manifest.next.json, only when the gap verdict needs more samples now
 - shadow-sample-accumulation-cycle-summary.json
 ```
 

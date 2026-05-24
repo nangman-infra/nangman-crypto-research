@@ -58,8 +58,10 @@ jq \
           sample_deficit:($sample.sample_deficit // 0),
           recommended_action:(
             if (($sample.sample_requirement_met // false) == true) then "review_shadow_completion_evidence"
-            elif ((.target_window_materialized_count // 0) == 0) then "wait_for_target_holding_window"
-            else "accumulate_shadow_observation_samples" end
+            elif (($sample.target_window_materialized_shadow_run_count // 0) == 0) then "wait_for_target_holding_window"
+            elif (($sample.target_window_materialized_shadow_run_count // 0) < ($sample.observed_shadow_run_count // 0)) then "wait_for_pending_shadow_target_window_materialization"
+            elif (($sample.sample_deficit // 0) > 0) then "accumulate_shadow_observation_samples"
+            else "review_shadow_completion_evidence" end
           )
         };
 
@@ -68,6 +70,10 @@ jq \
     | ($candidates | map(select(.sample_deficit > 0))) as $deficient
     | ($candidates | map(select(.sample_requirement_met == true))) as $sample_ready
     | ($candidates | map(select(.target_window_materialized_count == 0))) as $target_waiting
+    | (
+        $candidates
+        | map(select(.target_window_materialized_shadow_run_count > 0 and .target_window_materialized_shadow_run_count < .observed_shadow_run_count))
+      ) as $partial_materialized
     | ($candidates | map(select(.pending_count > 0))) as $pending
     | {
         schema_version:"research_shadow_sample_gap_manifest_v1",
@@ -96,11 +102,7 @@ jq \
           symbols:($candidates | map(.symbols // []) | flatten | unique_sorted),
           pending_candidate_count:($pending | length),
           target_window_waiting_candidate_count:($target_waiting | length),
-          partially_materialized_candidate_count:(
-            $candidates
-            | map(select(.target_window_materialized_count > 0 and .target_window_materialized_shadow_run_count < .observed_shadow_run_count))
-            | length
-          ),
+          partially_materialized_candidate_count:($partial_materialized | length),
           sample_requirement_met_candidate_count:($sample_ready | length),
           deficient_candidate_count:($deficient | length),
           total_sample_deficit:(($deficient | map(.sample_deficit) | add) // 0),
@@ -113,6 +115,7 @@ jq \
             if ($candidates | length) == 0 then "NO_SHADOW_CANDIDATES"
             elif ($plan.latest_l1_as_of_ms // null) == null then "DISCOVER_LATEST_MARKET_L1_AS_OF"
             elif ($target_waiting | length) > 0 then "WAIT_FOR_TARGET_HOLDING_WINDOW"
+            elif ($partial_materialized | length) > 0 then "WAIT_FOR_PENDING_SHADOW_TARGET_WINDOW_MATERIALIZATION"
             elif ($deficient | length) > 0 then "ACCUMULATE_SHADOW_SAMPLES_BEFORE_COMPLETION"
             elif ($pending | length) > 0 then "REVIEW_SHADOW_COMPLETION_EVIDENCE"
             else "NO_SHADOW_SAMPLE_GAP_DETECTED" end
@@ -120,7 +123,8 @@ jq \
           safe_next_actions:[
             if ($plan.latest_l1_as_of_ms // null) == null then "discover_latest_market_l1_as_of" else empty end,
             if ($target_waiting | length) > 0 then "wait_for_target_holding_window_materialization" else empty end,
-            if ($deficient | length) > 0 then "accumulate_shadow_observation_samples" else empty end,
+            if ($partial_materialized | length) > 0 then "wait_for_pending_shadow_target_window_materialization" else empty end,
+            if (($deficient | length) > 0 and ($target_waiting | length) == 0 and ($partial_materialized | length) == 0) then "accumulate_shadow_observation_samples" else empty end,
             if ($pending | length) > 0 then "keep_shadow_status_pending_until_completion_evidence_exists" else empty end,
             if ($sample_ready | length) > 0 then "review_sample_ready_candidates_for_shadow_completion" else empty end
           ],
