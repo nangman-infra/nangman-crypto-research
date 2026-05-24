@@ -471,16 +471,29 @@ pub async fn run(args: Args) -> AppResult<RunSummary> {
         budget.max_market_artifact_ref_count,
     )
     .await?;
-    let historical_replay_runs = load_historical_replay_runs(
-        &args,
-        manifest.as_ref(),
-        budget.max_historical_replay_run_ref_count,
-    )
-    .await?;
     let oss_adapter_runs = load_oss_adapter_runs(&args, manifest.as_ref()).await?;
     let completed_shadow_validation_runs =
         load_shadow_validation_runs(&args, manifest.as_ref()).await?;
     validate_oss_adapter_runs(&oss_adapter_runs)?;
+    let created_at_ms = args
+        .now_ms
+        .unwrap_or_else(|| deterministic_report_created_at_ms(&bundles));
+    let output_partition_at_ms = args.now_ms.unwrap_or_else(now_ms);
+    let replay_runs = build_replay_runs(&bundles, &market_deltas, &regime_contexts);
+    enforce_budget(
+        "new_replay_run_count",
+        replay_runs.len(),
+        budget.max_replay_run_count,
+    )?;
+    let historical_replay_runs = filter_historical_replay_runs_for_current_research(
+        load_historical_replay_runs(
+            &args,
+            manifest.as_ref(),
+            budget.max_historical_replay_run_ref_count,
+        )
+        .await?,
+        &replay_runs,
+    );
     enforce_budget(
         "historical_replay_run_count",
         historical_replay_runs.len(),
@@ -495,16 +508,6 @@ pub async fn run(args: Args) -> AppResult<RunSummary> {
         "shadow_validation_run_count",
         completed_shadow_validation_runs.len(),
         budget.max_shadow_validation_run_ref_count,
-    )?;
-    let created_at_ms = args
-        .now_ms
-        .unwrap_or_else(|| deterministic_report_created_at_ms(&bundles));
-    let output_partition_at_ms = args.now_ms.unwrap_or_else(now_ms);
-    let replay_runs = build_replay_runs(&bundles, &market_deltas, &regime_contexts);
-    enforce_budget(
-        "new_replay_run_count",
-        replay_runs.len(),
-        budget.max_replay_run_count,
     )?;
     let mut aggregate_replay_runs = historical_replay_runs.clone();
     aggregate_replay_runs.extend(replay_runs.clone());
@@ -1184,6 +1187,19 @@ fn append_unique_replay_runs(target: &mut Vec<ReplayRun>, runs: Vec<ReplayRun>) 
             target.push(run);
         }
     }
+}
+
+fn filter_historical_replay_runs_for_current_research(
+    runs: Vec<ReplayRun>,
+    current_replay_runs: &[ReplayRun],
+) -> Vec<ReplayRun> {
+    let current_aggregate_keys = current_replay_runs
+        .iter()
+        .map(|run| run.research_aggregate_key.as_str())
+        .collect::<BTreeSet<_>>();
+    runs.into_iter()
+        .filter(|run| current_aggregate_keys.contains(run.research_aggregate_key.as_str()))
+        .collect()
 }
 
 fn append_unique_oss_adapter_runs(target: &mut Vec<OssAdapterRun>, runs: Vec<OssAdapterRun>) {

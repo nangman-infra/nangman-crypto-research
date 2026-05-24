@@ -187,6 +187,10 @@ and loads the referenced historical replay samples before running the aggregate
 gate. This lets S3-triggered candidate runs accumulate replay evidence without a
 separate manifest for every dispatch. The discovery path is read-only and is
 bounded by `READ_LIMIT` and `SCAN_LIMIT`.
+Historical replay samples are filtered to aggregate keys produced by the current
+manifest's candidate bundles before they enter the gate. This preserves same
+symbol/horizon accumulation while preventing unrelated symbols from appearing in
+a focused research report.
 
 ECS placement:
 
