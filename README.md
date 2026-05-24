@@ -428,6 +428,28 @@ paper_trade_candidate_contract_version == paper_trade_candidate_v1
 termination_policy.no_order_execution == true
 ```
 
+## Shadow Validation Merge
+
+Use the merge checkpoint before recomputing observation or sample gap status
+from multiple shadow runs. It deduplicates by `shadow_validation_run_id` so
+repeated local loops do not inflate the effective sample count.
+
+```bash
+cd /Volumes/WD/Developments/nangman-crypto/apps/research-app
+
+RUN_DIR=/tmp/nangman-crypto/research-current-approved-batch/<run-id>
+
+scripts/merge-shadow-validation-runs.sh \
+  "$RUN_DIR/shadow-validation-merged.jsonl" \
+  "$RUN_DIR/research-output/shadow-validation-run/<partition>/part-000001.jsonl" \
+  "$RUN_DIR/shadow-accumulation-research-output/shadow-validation-run/<partition>/part-000001.jsonl"
+```
+
+The summary reports input count, merged count, duplicate count, symbols, and
+status counts. The merge is local-only: it does not mutate shadow status, does
+not write S3, does not start ECS tasks, and does not create paper/live
+artifacts.
+
 ## Shadow Observation Plan
 
 Use the shadow observation plan while shadow runs are still pending. It answers
