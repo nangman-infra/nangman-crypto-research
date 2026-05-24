@@ -407,6 +407,11 @@ The batch driver writes this checkpoint automatically as
 `retest-horizon-status.json`. The summary is local-only: it does not upload S3
 outputs, start ECS tasks, switch the dispatcher, or create shadow/paper/live
 artifacts.
+When the optional batch driver summary is absent, the checkpoint derives
+`stage_state.research_replay_completed` from the retest horizon plan: every
+candidate in the plan must have at least one replay-backed horizon. This keeps
+focused source-gap replays from reporting an unknown replay state only because
+they were not launched by the current-approved batch driver.
 
 ## Shadow Validation Status
 

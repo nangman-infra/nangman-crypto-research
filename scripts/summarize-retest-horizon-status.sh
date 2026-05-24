@@ -171,6 +171,16 @@ jq \
     | ($driver_summary // {}) as $driver
     | ($driver_manifest_summary // {}) as $manifest_summary
     | ($driver.manifest.latest_universe // $manifest_summary.latest_universe // {}) as $latest_universe
+    | ($rows | map(.candidate_id) | unique_sorted) as $all_candidate_ids_for_stage
+    | (
+        $rows
+        | map(select((.replay_run_count // 0) > 0) | .candidate_id)
+        | unique_sorted
+      ) as $replayed_candidate_ids_for_stage
+    | (
+        ($all_candidate_ids_for_stage | length) > 0
+        and (($all_candidate_ids_for_stage - $replayed_candidate_ids_for_stage) | length) == 0
+      ) as $plan_research_replay_completed
     | (
         $rows
         | sort_by(.primary_symbol, .candidate_id, .horizon)
@@ -209,7 +219,9 @@ jq \
             ($driver.stage_state.candidate_generated // false)
             or (($rows | length) > 0)
           ),
-          research_replay_completed:($driver.stage_state.research_replay_completed // null),
+          research_replay_completed:(
+            $driver.stage_state.research_replay_completed // $plan_research_replay_completed
+          ),
           promotion_passed:($driver.stage_state.promotion_passed // false),
           shadow_created:($driver.stage_state.shadow_created // false),
           paper_created:($driver.stage_state.paper_created // false),
