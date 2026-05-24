@@ -556,6 +556,35 @@ does not start ECS tasks, and does not create paper/live artifacts. After a
 local run with the focused manifest, rebuild the shadow observation plan and
 sample gap manifest before considering any completed shadow review.
 
+## Shadow Sample Accumulation Cycle
+
+Use the cycle driver after one or more local runs have emitted shadow validation
+files. It discovers shadow outputs under a run directory, deduplicates them,
+rebuilds the observation plan and sample gap manifest, then writes the next
+focused accumulation manifest when more samples are still required.
+
+```bash
+cd /Volumes/WD/Developments/nangman-crypto/apps/research-app
+
+RUN_DIR=/tmp/nangman-crypto/research-current-approved-batch/<run-id>
+
+scripts/run-shadow-sample-accumulation-cycle.sh "$RUN_DIR"
+```
+
+The driver writes:
+
+```text
+- shadow-validation-merged.jsonl
+- shadow-validation-merged.summary.json
+- shadow-observation-plan.cycle.json
+- shadow-sample-gap-manifest.cycle.json
+- shadow-accumulation-input-manifest.next.json, only when the gap verdict needs more samples
+- shadow-sample-accumulation-cycle-summary.json
+```
+
+The cycle is local-only. It does not run ECS, switch the dispatcher, mutate
+shadow status, or create paper/live artifacts.
+
 ## Market-L1 Coverage Gap Diagnosis
 
 Use the Market-L1 coverage gap diagnosis when the retest horizon status reports
