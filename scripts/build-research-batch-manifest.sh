@@ -6,8 +6,8 @@ REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-ap-northeast-2}}"
 DISPATCHER_FUNCTION="${RESEARCH_DISPATCHER_FUNCTION:-lmbd-nangman-dev-research-apn2}"
 TASK_DEFINITION="${RESEARCH_ECS_TASK_DEFINITION:-td-nangman-dev-research-apn2}"
 CONTAINER_NAME="${RESEARCH_ECS_CONTAINER:-research-app}"
-CANDIDATE_READ_LIMIT="${RESEARCH_BATCH_CANDIDATE_READ_LIMIT:-50}"
-MAX_CANDIDATE_BUNDLE_COUNT="${RESEARCH_BATCH_MAX_CANDIDATE_BUNDLE_COUNT:-50}"
+CANDIDATE_READ_LIMIT="${RESEARCH_BATCH_CANDIDATE_READ_LIMIT:-1000}"
+MAX_CANDIDATE_BUNDLE_COUNT="${RESEARCH_BATCH_MAX_CANDIDATE_BUNDLE_COUNT:-1000}"
 HISTORICAL_INDEX_READ_LIMIT="${RESEARCH_BATCH_HISTORICAL_INDEX_READ_LIMIT:-20}"
 MAX_HISTORICAL_REPLAY_RUN_REF_COUNT="${RESEARCH_BATCH_MAX_HISTORICAL_REPLAY_RUN_REF_COUNT:-10000}"
 MAX_REPLAY_RUN_COUNT="${RESEARCH_BATCH_MAX_REPLAY_RUN_COUNT:-20000}"
@@ -441,6 +441,8 @@ if [[ "$selected_candidate_count" == "0" ]]; then
     --arg region "$REGION" \
     --arg dispatch_mode "$dispatch_mode" \
     --arg universe_mode "$UNIVERSE_MODE" \
+    --argjson candidate_read_limit "$CANDIDATE_READ_LIMIT" \
+    --argjson max_candidate_bundle_count "$MAX_CANDIDATE_BUNDLE_COUNT" \
     --argjson universe "$(cat "$universe_summary_json")" \
     --argjson candidates "$(cat "$all_candidates_json")" \
     '{
@@ -458,6 +460,8 @@ if [[ "$selected_candidate_count" == "0" ]]; then
         selected_candidates_require_current_universe:($universe_mode != "legacy_retest")
       },
       latest_universe:$universe,
+      candidate_read_limit:$candidate_read_limit,
+      max_candidate_bundle_count:$max_candidate_bundle_count,
       selected_candidate_count:0,
       scanned_research_eligible_candidate_count:($candidates | length),
       current_observed_candidate_count:([$candidates[] | select(.current_universe_observed == true)] | length),
@@ -563,6 +567,8 @@ jq -n \
   --arg universe_mode "$UNIVERSE_MODE" \
   --arg run_scope "$RUN_SCOPE" \
   --arg research_packet_id "$RESEARCH_PACKET_ID" \
+  --argjson candidate_read_limit "$CANDIDATE_READ_LIMIT" \
+  --argjson max_candidate_bundle_count "$MAX_CANDIDATE_BUNDLE_COUNT" \
   --argjson universe "$(cat "$universe_summary_json")" \
   --argjson scanned_candidates "$(cat "$all_candidates_json")" \
   --argjson candidates "$(cat "$selected_candidates_json")" \
@@ -582,6 +588,8 @@ jq -n \
       selected_candidates_require_current_universe:($universe_mode != "legacy_retest")
     },
     latest_universe:$universe,
+    candidate_read_limit:$candidate_read_limit,
+    max_candidate_bundle_count:$max_candidate_bundle_count,
     research_packet_id:$research_packet_id,
     run_scope:$run_scope,
     scanned_research_eligible_candidate_count:($scanned_candidates | length),

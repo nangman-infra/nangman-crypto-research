@@ -94,6 +94,13 @@ from looking like current promotion-safe input. For diagnostic replay only, use
 `RESEARCH_BATCH_UNIVERSE_MODE=legacy_retest`; that mode must not be used as
 promotion evidence.
 
+The default recent-candidate scan is intentionally wide:
+`RESEARCH_BATCH_CANDIDATE_READ_LIMIT=1000` and
+`RESEARCH_BATCH_MAX_CANDIDATE_BUNDLE_COUNT=1000`. This keeps current major-50
+coverage checks from silently missing still-relevant approved candidates that
+fall outside a very small recent-object window. For a quick smoke check, lower
+both values explicitly in the shell environment.
+
 The builder also enforces the current research holding horizon contract before
 selecting a bundle. Stale candidate bundles with unsupported or over-limit
 `allowed_horizons` are excluded from the local manifest and counted in
@@ -238,6 +245,11 @@ AWS_PROFILE=<sso-profile> \
 AWS_REGION=ap-northeast-2 \
 scripts/check-loop-state.sh
 ```
+
+The loop-state check uses `RESEARCH_LOOP_STATE_CANDIDATE_READ_LIMIT=1000` by
+default for the same reason as the batch manifest builder: a narrow recent
+window can make the system look less covered than the current artifact set
+actually is. Override it only for bounded smoke checks.
 
 The output separates these states:
 

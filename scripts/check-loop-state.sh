@@ -5,7 +5,7 @@ REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-ap-northeast-2}}"
 DISPATCHER_FUNCTION="${RESEARCH_DISPATCHER_FUNCTION:-lmbd-nangman-dev-research-apn2}"
 TASK_DEFINITION="${RESEARCH_ECS_TASK_DEFINITION:-td-nangman-dev-research-apn2}"
 CONTAINER_NAME="${RESEARCH_ECS_CONTAINER:-research-app}"
-CANDIDATE_READ_LIMIT="${RESEARCH_LOOP_STATE_CANDIDATE_READ_LIMIT:-50}"
+CANDIDATE_READ_LIMIT="${RESEARCH_LOOP_STATE_CANDIDATE_READ_LIMIT:-1000}"
 EXPECTED_MAJOR_UNIVERSE_SIZE="${RESEARCH_EXPECTED_MAJOR_UNIVERSE_SIZE:-50}"
 
 require_command() {
@@ -319,8 +319,10 @@ while IFS= read -r key; do
 done < <(jq -r '.[].Key' "$candidate_objects_json")
 
 candidate_summary="$(jq -s -c \
+  --argjson read_limit "$CANDIDATE_READ_LIMIT" \
   --argjson object_count "$(jq 'length' "$candidate_objects_json")" \
   '{
+    candidate_read_limit:$read_limit,
     recent_bundle_object_count:$object_count,
     recent_candidate_record_count:length,
     distinct_candidate_symbols:([.[].symbols[]?] | unique | sort),
