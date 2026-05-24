@@ -204,6 +204,9 @@ if [[ "$accumulation_created" == true ]]; then
       next_decision:{
         verdict:($gap[0].next_decision.verdict // null),
         safe_next_actions:($gap[0].next_decision.safe_next_actions // []),
+        next_observation_not_before_ms:($gap[0].next_decision.next_observation_not_before_ms // null),
+        next_observation_not_before_at:($gap[0].next_decision.next_observation_not_before_at // null),
+        next_observation_not_before_source:($gap[0].next_decision.next_observation_not_before_source // null),
         blocked_actions:(
           (($gap[0].next_decision.blocked_actions // [])
           + ($accumulation[0].next_decision.blocked_actions // []))
@@ -256,6 +259,9 @@ else
       next_decision:{
         verdict:($gap[0].next_decision.verdict // null),
         safe_next_actions:($gap[0].next_decision.safe_next_actions // []),
+        next_observation_not_before_ms:($gap[0].next_decision.next_observation_not_before_ms // null),
+        next_observation_not_before_at:($gap[0].next_decision.next_observation_not_before_at // null),
+        next_observation_not_before_source:($gap[0].next_decision.next_observation_not_before_source // null),
         blocked_actions:($gap[0].next_decision.blocked_actions // [])
       }
     }' > "$CYCLE_SUMMARY_FILE"

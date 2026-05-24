@@ -510,6 +510,7 @@ The manifest separates:
 - shadow_sample_backlog: candidate-level required/materialized/deficit counts
 - sample_ready_candidates: candidates whose sample requirement is met
 - partially_materialized_candidate_count: records that exist but whose later target windows are not fully covered yet
+- next_observation_not_before_ms: earliest pending target window deadline to recheck
 - next_decision.verdict: whether to wait, accumulate samples, or review completion evidence
 - blocked_actions: shadow/paper/live actions that must remain closed
 ```
@@ -522,7 +523,9 @@ If some shadow records are materialized and newer records are still waiting for
 their target window, the manifest reports
 `WAIT_FOR_PENDING_SHADOW_TARGET_WINDOW_MATERIALIZATION`. This prevents the local
 cycle from immediately creating another focused research manifest before the
-already-created pending observations can become valid samples.
+already-created pending observations can become valid samples. The
+`next_observation_not_before_ms` field tells an autonomous loop the earliest
+safe time to refresh the observation plan.
 
 The output is local-only. It does not mutate shadow status, does not write S3,
 does not start ECS tasks, and does not create paper/live artifacts.
@@ -588,6 +591,10 @@ The driver writes:
 - shadow-accumulation-input-manifest.next.json, only when the gap verdict needs more samples now
 - shadow-sample-accumulation-cycle-summary.json
 ```
+
+The cycle summary carries `next_decision.next_observation_not_before_ms` from
+the gap manifest so a scheduler can wait until the next pending target window
+deadline instead of spinning the research loop immediately.
 
 The cycle is local-only. It does not run ECS, switch the dispatcher, mutate
 shadow status, or create paper/live artifacts.

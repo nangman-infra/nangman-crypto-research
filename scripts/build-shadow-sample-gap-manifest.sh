@@ -38,6 +38,13 @@ jq \
       ($counts | map(select(.value == $status) | .count) | add) // 0;
     def sample_status:
       .observation_sample_status // {};
+    def pending_target_window_runs:
+      (.runs // [])
+      | map(select((.target_window_materialized // false) == false and (.target_exit_deadline_ms // null) != null));
+    def next_pending_target_exit_deadline_ms:
+      (pending_target_window_runs | map(.target_exit_deadline_ms) | min) // null;
+    def latest_pending_target_exit_deadline_ms:
+      (pending_target_window_runs | map(.target_exit_deadline_ms) | max) // null;
     def candidate_projection:
       sample_status as $sample
       | (.status_counts // []) as $status_counts
@@ -52,6 +59,9 @@ jq \
           absolute_window_materialized_count:(.absolute_window_materialized_count // 0),
           observed_shadow_run_count:($sample.observed_shadow_run_count // 0),
           target_window_materialized_shadow_run_count:($sample.target_window_materialized_shadow_run_count // 0),
+          pending_target_window_shadow_run_count:(pending_target_window_runs | length),
+          next_pending_target_exit_deadline_ms:next_pending_target_exit_deadline_ms,
+          latest_pending_target_exit_deadline_ms:latest_pending_target_exit_deadline_ms,
           required_shadow_sample_count:($sample.required_shadow_sample_count // 0),
           sample_requirement_basis:($sample.sample_requirement_basis // "target_window_materialized_shadow_run_count"),
           sample_requirement_met:($sample.sample_requirement_met // false),
@@ -74,6 +84,11 @@ jq \
         $candidates
         | map(select(.target_window_materialized_shadow_run_count > 0 and .target_window_materialized_shadow_run_count < .observed_shadow_run_count))
       ) as $partial_materialized
+    | (
+        $candidates
+        | map(select(.pending_target_window_shadow_run_count > 0))
+      ) as $pending_target_window
+    | (($pending_target_window | map(.next_pending_target_exit_deadline_ms) | map(select(. != null)) | min) // null) as $next_observation_not_before_ms
     | ($candidates | map(select(.pending_count > 0))) as $pending
     | {
         schema_version:"research_shadow_sample_gap_manifest_v1",
@@ -103,6 +118,13 @@ jq \
           pending_candidate_count:($pending | length),
           target_window_waiting_candidate_count:($target_waiting | length),
           partially_materialized_candidate_count:($partial_materialized | length),
+          pending_target_window_candidate_count:($pending_target_window | length),
+          next_observation_not_before_ms:$next_observation_not_before_ms,
+          next_observation_not_before_at:(
+            if $next_observation_not_before_ms == null then null
+            else (($next_observation_not_before_ms / 1000) | todateiso8601)
+            end
+          ),
           sample_requirement_met_candidate_count:($sample_ready | length),
           deficient_candidate_count:($deficient | length),
           total_sample_deficit:(($deficient | map(.sample_deficit) | add) // 0),
@@ -128,6 +150,17 @@ jq \
             if ($pending | length) > 0 then "keep_shadow_status_pending_until_completion_evidence_exists" else empty end,
             if ($sample_ready | length) > 0 then "review_sample_ready_candidates_for_shadow_completion" else empty end
           ],
+          next_observation_not_before_ms:$next_observation_not_before_ms,
+          next_observation_not_before_at:(
+            if $next_observation_not_before_ms == null then null
+            else (($next_observation_not_before_ms / 1000) | todateiso8601)
+            end
+          ),
+          next_observation_not_before_source:(
+            if $next_observation_not_before_ms == null then null
+            else "pending_shadow_target_exit_deadline_ms"
+            end
+          ),
           blocked_actions:[
             "do_not_mark_pending_shadow_passed_from_sample_counts_only",
             "do_not_create_paper_without_completed_passed_shadow",
