@@ -737,6 +737,37 @@ If no horizons match the requested actions, it writes an empty manifest and
 summary, reports `selected_candidate_bundle_ref_count=0`, and exits non-zero so
 operators do not accidentally treat an empty focused run as replay evidence.
 
+## Source-Gap Evidence Manifest
+
+Use the source-gap evidence manifest when candidate coverage diagnosis shows an
+approved symbol already has research-eligible candidate evidence, but that
+evidence was outside the current research batch selection window. This path does
+not rerun crawl, Market-L1 backfill, ECS, or dispatcher activation. It only turns
+existing candidate evidence refs into a local `research_input_manifest_v1`.
+
+```bash
+cd /Volumes/WD/Developments/nangman-crypto/apps/research-app
+
+RESEARCH_SOURCE_GAP_MANIFEST_OUTPUT=/tmp/nangman-crypto/research-source-gap/input-manifest.json \
+RESEARCH_SOURCE_GAP_SUMMARY_OUTPUT=/tmp/nangman-crypto/research-source-gap/input-manifest.summary.json \
+scripts/build-source-gap-evidence-manifest.sh \
+  /tmp/nangman-crypto/research-current-approved-batch/<run-id>/candidate-source-gap-diagnosis.json \
+  /tmp/nangman-crypto/research-current-approved-batch/<run-id>/research-input-manifest.json
+```
+
+By default the script selects only
+`candidate_evidence_outside_research_batch_selection`. Override with
+`RESEARCH_SOURCE_GAP_STATUSES=status_a,status_b` only for an explicit local
+probe. If diagnosis refs are object keys instead of `s3://` URIs, the script
+infers the candidate bucket from the source manifest. Without a source manifest,
+set `RESEARCH_SOURCE_GAP_CANDIDATE_S3_BUCKET=<candidate-bucket>`.
+
+`RESEARCH_SOURCE_GAP_INCLUDE_HISTORICAL_INDEX_REFS` defaults to `auto`: it
+carries historical replay indexes only when the source manifest has them. Set it
+to `false` for current-run-only replay. The summary reports whether it used full
+`evidence_refs` or limited `sample_evidence_refs`; limited refs are enough for a
+focused probe but should not be mistaken for complete major-50 coverage.
+
 ## Post-Activation Runtime Check
 
 After an approved output-enabled run or dispatcher activation, verify the
