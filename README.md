@@ -295,7 +295,11 @@ scripts/check-loop-state.sh
 The loop-state check uses `RESEARCH_LOOP_STATE_CANDIDATE_READ_LIMIT=1000` by
 default for the same reason as the batch manifest builder: a narrow recent
 window can make the system look less covered than the current artifact set
-actually is. Override it only for bounded smoke checks.
+actually is. It also reads recent research reports with
+`RESEARCH_LOOP_STATE_REPORT_READ_LIMIT=100` and selects the largest complete
+`current_approved_auto_research_validation_shard` batch as `research_evidence`
+when that batch covers more candidates than the latest single report. Override
+these limits only for bounded smoke checks.
 
 The output separates these states:
 
@@ -322,6 +326,10 @@ It also emits `coverage_gaps` and a machine-readable `next_decision`:
 - next_decision.safety
 - next_decision.evidence
 ```
+
+The output keeps `latest_research_report` as the newest single report, but uses
+`best_current_approved_shard_batch` and `research_evidence` to avoid treating a
+small dispatcher smoke report as the whole research coverage surface.
 
 `next_decision` is a scheduling handoff, not an execution command. It keeps
 the check read-only, records why automation should wait or continue, and keeps

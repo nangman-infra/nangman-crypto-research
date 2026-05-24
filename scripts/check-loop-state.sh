@@ -6,6 +6,7 @@ DISPATCHER_FUNCTION="${RESEARCH_DISPATCHER_FUNCTION:-lmbd-nangman-dev-research-a
 TASK_DEFINITION="${RESEARCH_ECS_TASK_DEFINITION:-td-nangman-dev-research-apn2}"
 CONTAINER_NAME="${RESEARCH_ECS_CONTAINER:-research-app}"
 CANDIDATE_READ_LIMIT="${RESEARCH_LOOP_STATE_CANDIDATE_READ_LIMIT:-1000}"
+REPORT_READ_LIMIT="${RESEARCH_LOOP_STATE_REPORT_READ_LIMIT:-100}"
 EXPECTED_MAJOR_UNIVERSE_SIZE="${RESEARCH_EXPECTED_MAJOR_UNIVERSE_SIZE:-50}"
 
 require_command() {
@@ -133,6 +134,7 @@ echo "region=$REGION"
 echo "dispatcher=$DISPATCHER_FUNCTION"
 echo "task_definition=$TASK_DEFINITION"
 echo "candidate_read_limit=$CANDIDATE_READ_LIMIT"
+echo "report_read_limit=$REPORT_READ_LIMIT"
 echo
 
 verify_aws_access
@@ -144,7 +146,9 @@ candidate_p1_json="$(mktemp)"
 candidate_p2_json="$(mktemp)"
 candidate_objects_json="$(mktemp)"
 candidate_records_json="$(mktemp)"
-trap 'rm -f "$lambda_json" "$task_json" "$candidate_p0_json" "$candidate_p1_json" "$candidate_p2_json" "$candidate_objects_json" "$candidate_records_json"' EXIT
+report_objects_json="$(mktemp)"
+report_records_json="$(mktemp)"
+trap 'rm -f "$lambda_json" "$task_json" "$candidate_p0_json" "$candidate_p1_json" "$candidate_p2_json" "$candidate_objects_json" "$candidate_records_json" "$report_objects_json" "$report_records_json"' EXIT
 
 aws_cmd lambda get-function-configuration \
   --function-name "$DISPATCHER_FUNCTION" \
@@ -360,6 +364,8 @@ if [[ -n "$report_key" ]]; then
           key:$key,
           last_modified:$last_modified,
           schema_version,
+          research_packet_id,
+          run_scope,
           research_run_status,
           source_candidate_count:((.source_candidate_ids // []) | length),
           replay_run_count:((.replay_run_ids // []) | length),
@@ -371,6 +377,7 @@ if [[ -n "$report_key" ]]; then
           shadow_validation_count:((.shadow_validation_runs // []) | length),
           paper_trade_candidate_count:((.paper_trade_candidates // []) | length),
           bias_counts:bias_counts,
+          gate_biases:([(.partition_aggregates // [])[].gate_bias] | unique | sort),
           promotion_bias_count:([
             (.summary_findings // [])[]?
             | select((.bias // "") | startswith("PROMOTE_TO_"))
@@ -391,9 +398,128 @@ else
     shadow_validation_count:0,
     paper_trade_candidate_count:0,
     bias_counts:[],
+    gate_biases:[],
     promotion_bias_count:0
   }')"
 fi
+
+aws_cmd s3api list-objects-v2 \
+  --bucket "$output_bucket" \
+  --prefix "research-run-report/" \
+  --output json \
+| jq -c --argjson limit "$REPORT_READ_LIMIT" '
+    (.Contents // [])
+    | sort_by(.LastModified, .Key)
+    | reverse
+    | .[0:$limit]' > "$report_objects_json"
+
+: > "$report_records_json"
+while IFS= read -r object_json; do
+  key="$(jq -r '.Key' <<<"$object_json")"
+  last_modified="$(jq -r '.LastModified' <<<"$object_json")"
+  [[ -z "$key" || "$key" == "null" ]] && continue
+  aws_cmd s3 cp "s3://${output_bucket}/${key}" - \
+  | jq -c \
+      --arg key "$key" \
+      --arg last_modified "$last_modified" '
+        {
+          key:$key,
+          last_modified:$last_modified,
+          schema_version,
+          research_packet_id,
+          run_scope,
+          research_run_status,
+          source_candidate_count:((.source_candidate_ids // []) | length),
+          replay_run_count:((.replay_run_ids // []) | length),
+          partition_count:(.partition_count // ((.partition_aggregates // []) | length)),
+          top_symbols:(.top_symbols // []),
+          partition_symbols:([(.partition_aggregates // [])[].symbol_canonical] | unique | sort),
+          gate_biases:([(.partition_aggregates // [])[].gate_bias] | unique | sort),
+          shadow_validation_count:((.shadow_validation_runs // []) | length),
+          paper_trade_candidate_count:((.paper_trade_candidates // []) | length),
+          promotion_bias_count:([
+            (.summary_findings // [])[]?
+            | select((.bias // "") | startswith("PROMOTE_TO_"))
+          ] | length)
+        }
+      ' >> "$report_records_json"
+done < <(jq -c '.[]' "$report_objects_json")
+
+current_approved_shard_batch_summary="$(jq -s -c '
+  def shard_meta:
+    (.research_packet_id // "")
+    | capture("^(?<dispatch_group_id>.*)_shard(?<shard_number>[0-9]+)of(?<shard_count>[0-9]+)$")?;
+
+  def empty_batch:
+    {
+      present:false,
+      selection:"largest_complete_current_approved_shard_batch",
+      dispatch_group_id:null,
+      report_count:0,
+      expected_shard_count:0,
+      complete:false,
+      first_last_modified:null,
+      last_modified:null,
+      source_candidate_count:0,
+      replay_run_count:0,
+      top_symbols:[],
+      gate_biases:[],
+      statuses:[],
+      promotion_bias_count:0,
+      shadow_validation_count:0,
+      paper_trade_candidate_count:0
+    };
+
+  map(
+    select(.run_scope == "current_approved_auto_research_validation_shard")
+    | . + {shard_meta:shard_meta}
+    | select(.shard_meta != null)
+  )
+  | group_by(.shard_meta.dispatch_group_id)
+  | map(
+      . as $reports
+      | ($reports | map((.shard_meta.shard_count // "0") | tonumber) | max) as $expected_shard_count
+      | ($reports | map((.shard_meta.shard_number // "0") | tonumber) | unique | sort) as $shard_numbers
+      | {
+          present:true,
+          selection:"largest_complete_current_approved_shard_batch",
+          dispatch_group_id:($reports[0].shard_meta.dispatch_group_id),
+          report_count:($reports | length),
+          expected_shard_count:$expected_shard_count,
+          complete:(($shard_numbers | length) == $expected_shard_count),
+          shard_numbers:$shard_numbers,
+          first_last_modified:($reports | map(.last_modified) | min),
+          last_modified:($reports | map(.last_modified) | max),
+          source_candidate_count:($reports | map(.source_candidate_count) | add // 0),
+          replay_run_count:($reports | map(.replay_run_count) | add // 0),
+          top_symbols:($reports | map((.partition_symbols // [])[]?, (.top_symbols // [])[]?) | unique | sort),
+          gate_biases:($reports | map((.gate_biases // [])[]?) | unique | sort),
+          statuses:($reports | map(.research_run_status) | unique | sort),
+          promotion_bias_count:($reports | map(.promotion_bias_count) | add // 0),
+          shadow_validation_count:($reports | map(.shadow_validation_count) | add // 0),
+          paper_trade_candidate_count:($reports | map(.paper_trade_candidate_count) | add // 0)
+        }
+    )
+  | map(select(.complete == true))
+  | sort_by(.source_candidate_count, .last_modified)
+  | last // empty_batch
+' "$report_records_json")"
+
+research_evidence_summary="$(jq -n -c \
+  --argjson latest "$report_summary" \
+  --argjson shard_batch "$current_approved_shard_batch_summary" '
+    if (
+      ($shard_batch.present // false)
+      and (($shard_batch.source_candidate_count // 0) > ($latest.source_candidate_count // 0))
+    ) then
+      $shard_batch + {evidence_source:"current_approved_shard_batch"}
+    else
+      $latest + {
+        evidence_source:"latest_research_report",
+        selection:"latest_research_report"
+      }
+    end
+  ')"
 
 prefix_summary="$(jq -n -c \
   --argjson report "$report_object" \
@@ -418,6 +544,8 @@ jq -n \
   --argjson universe "$universe_summary" \
   --argjson candidates "$candidate_summary" \
   --argjson report "$report_summary" \
+  --argjson current_approved_shard_batch "$current_approved_shard_batch_summary" \
+  --argjson research "$research_evidence_summary" \
   --argjson prefixes "$prefix_summary" \
   '{
     region:$region,
@@ -433,8 +561,8 @@ jq -n \
       major50_universe_approved:$universe.approved_major_coverage_complete,
       candidate_generated:($candidates.recent_candidate_record_count > 0),
       artifact_created:($prefixes.research_run_report.key != null and $prefixes.replay_run.key != null and $prefixes.replay_run_index.key != null),
-      research_replay_completed:($report.present and $report.replay_run_count > 0),
-      promotion_passed:($report.promotion_bias_count > 0 or $report.shadow_validation_count > 0 or $report.paper_trade_candidate_count > 0),
+      research_replay_completed:($research.present and $research.replay_run_count > 0),
+      promotion_passed:($research.promotion_bias_count > 0 or $research.shadow_validation_count > 0 or $research.paper_trade_candidate_count > 0),
       shadow_created:($prefixes.shadow_validation_run.key != null),
       paper_created:($prefixes.paper_trade_run.key != null),
       live_enabled:false
@@ -442,19 +570,21 @@ jq -n \
     major50_universe:$universe,
     recent_candidates:$candidates,
     latest_research_report:$report,
+    best_current_approved_shard_batch:$current_approved_shard_batch,
+    research_evidence:$research,
     latest_prefixes:$prefixes,
     coverage_gaps:{
       approved_symbols_without_recent_candidate:(($universe.approved_symbols // []) - ($candidates.distinct_candidate_symbols // [])),
       recent_candidate_symbols_without_replay:(
-        if ($report.present and (($report.top_symbols // []) | length) > 0) then
-          (($candidates.distinct_candidate_symbols // []) - ($report.top_symbols // []))
+        if ($research.present and (($research.top_symbols // []) | length) > 0) then
+          (($candidates.distinct_candidate_symbols // []) - ($research.top_symbols // []))
         else
           ($candidates.distinct_candidate_symbols // [])
         end
       ),
       replayed_symbols_without_promotion:(
-        if ($report.promotion_bias_count == 0) then
-          ($report.top_symbols // [])
+        if ($research.promotion_bias_count == 0) then
+          ($research.top_symbols // [])
         else
           []
         end
@@ -470,8 +600,8 @@ jq -n \
           elif ($universe.major_coverage_complete | not) then "WAIT_FOR_MAJOR50_OBSERVATION"
           elif ($universe.approved_major_coverage_complete | not) then "WAIT_FOR_MAJOR50_APPROVAL"
           elif (($candidate_gap | length) > 0) then "INCREASE_CANDIDATE_GENERATION_COVERAGE"
-          elif (($report.present | not) or $report.replay_run_count == 0) then "RUN_RESEARCH_REPLAY"
-          elif ($report.promotion_bias_count == 0 and $report.shadow_validation_count == 0) then "ACCUMULATE_RESEARCH_REPLAY_EVIDENCE"
+          elif (($research.present | not) or $research.replay_run_count == 0) then "RUN_RESEARCH_REPLAY"
+          elif ($research.promotion_bias_count == 0 and $research.shadow_validation_count == 0) then "ACCUMULATE_RESEARCH_REPLAY_EVIDENCE"
           elif ($prefixes.shadow_validation_run.key == null) then "REVIEW_PROMOTION_FOR_SHADOW"
           elif ($prefixes.paper_trade_run.key == null) then "WAIT_FOR_PASSED_SHADOW_BEFORE_PAPER"
           else "REVIEW_PAPER_PROGRESS"
@@ -482,9 +612,9 @@ jq -n \
           if ($universe.major_coverage_complete | not) then "wait_for_major50_observation" else empty end,
           if ($universe.approved_major_coverage_complete | not) then "wait_for_major50_approval" else empty end,
           if (($candidate_gap | length) > 0) then "increase_candidate_generation_for_approved_major50_symbols" else empty end,
-          if ($report.present and $report.replay_run_count > 0 and $report.promotion_bias_count == 0) then "keep_accumulating_completed_native_replay_samples" else empty end,
-          if (($report.present | not) or $report.replay_run_count == 0) then "run_research_replay_for_recent_candidates" else empty end,
-          if ($report.promotion_bias_count > 0 and $prefixes.shadow_validation_run.key == null) then "review_promotion_to_shadow_evidence" else empty end
+          if ($research.present and $research.replay_run_count > 0 and $research.promotion_bias_count == 0) then "keep_accumulating_completed_native_replay_samples" else empty end,
+          if (($research.present | not) or $research.replay_run_count == 0) then "run_research_replay_for_recent_candidates" else empty end,
+          if ($research.promotion_bias_count > 0 and $prefixes.shadow_validation_run.key == null) then "review_promotion_to_shadow_evidence" else empty end
         ]),
         blocked_actions:[
           "do_not_create_shadow_without_promotion",
@@ -506,8 +636,9 @@ jq -n \
           major50_approved:$universe.approved_major_coverage_complete,
           approved_symbols_without_recent_candidate_count:($candidate_gap | length),
           recent_candidate_symbol_count:$candidates.distinct_candidate_symbol_count,
-          research_replay_count:$report.replay_run_count,
-          promotion_bias_count:$report.promotion_bias_count,
+          research_evidence_source:$research.evidence_source,
+          research_replay_count:$research.replay_run_count,
+          promotion_bias_count:$research.promotion_bias_count,
           shadow_output_present:($prefixes.shadow_validation_run.key != null),
           paper_output_present:($prefixes.paper_trade_run.key != null)
         }
@@ -518,8 +649,8 @@ jq -n \
       if ($universe.major_coverage_complete | not) then "major50_observed_universe_incomplete" else empty end,
       if ($universe.approved_major_coverage_complete | not) then "major50_approved_universe_incomplete" else empty end,
       if ($candidates.recent_candidate_record_count == 0) then "no_recent_candidate_bundles" else empty end,
-      if (($report.present | not) or $report.replay_run_count == 0) then "research_replay_not_completed" else empty end,
-      if ($report.promotion_bias_count == 0 and $report.shadow_validation_count == 0) then "no_promoted_shadow_candidate" else empty end,
+      if (($research.present | not) or $research.replay_run_count == 0) then "research_replay_not_completed" else empty end,
+      if ($research.promotion_bias_count == 0 and $research.shadow_validation_count == 0) then "no_promoted_shadow_candidate" else empty end,
       if ($prefixes.shadow_validation_run.key == null) then "shadow_output_absent" else empty end,
       if ($prefixes.paper_trade_run.key == null) then "paper_output_absent" else empty end
     ])
