@@ -573,7 +573,30 @@ jq -n \
   --argjson scanned_candidates "$(cat "$all_candidates_json")" \
   --argjson candidates "$(cat "$selected_candidates_json")" \
   --argjson indexes "$(cat "$historical_index_objects_json")" \
-  '{
+  '
+  def eligible_for_universe_mode:
+    .batch_horizon_contract_valid == true
+    and if $universe_mode == "current_approved" then .current_universe_approved == true
+    elif $universe_mode == "current_observed" then .current_universe_observed == true
+    elif $universe_mode == "legacy_retest" then .research_eligible == true
+    else false
+    end;
+  def latest_unique_by_candidate_id:
+    sort_by(.last_modified, .key)
+    | reverse
+    | reduce .[] as $candidate ({};
+        if has($candidate.candidate_id) then .
+        else .[$candidate.candidate_id] = $candidate
+        end
+      )
+    | [.[]]
+    | sort_by(.last_modified, .key)
+    | reverse;
+
+  ($scanned_candidates | map(select(eligible_for_universe_mode)) | latest_unique_by_candidate_id) as $eligible_candidates
+  | ([$candidates[].candidate_id] | unique) as $selected_candidate_ids
+  | ($eligible_candidates | map(select((.candidate_id as $id | $selected_candidate_ids | index($id)) | not))) as $unselected_candidates
+  | {
     generated_at:$generated_at,
     manifest_output:$manifest_output,
     summary_output:$summary_output,
@@ -594,7 +617,15 @@ jq -n \
     run_scope:$run_scope,
     scanned_research_eligible_candidate_count:($scanned_candidates | length),
     selected_candidate_count:($candidates | length),
+    eligible_candidate_pool_count:($eligible_candidates | length),
+    selected_candidate_limit_reached:(
+      ($candidates | length) >= $max_candidate_bundle_count
+      and ($eligible_candidates | length) > ($candidates | length)
+    ),
+    unselected_eligible_candidate_count:($unselected_candidates | length),
+    unselected_eligible_candidate_symbols:([$unselected_candidates[].symbols[]?] | unique | sort),
     distinct_candidate_symbols:([$candidates[].symbols[]?] | unique | sort),
+    eligible_candidate_symbols:([$eligible_candidates[].symbols[]?] | unique | sort),
     candidate_class_counts:(
       [$candidates[].candidate_class]
       | group_by(.)
@@ -649,6 +680,9 @@ jq -n \
   echo "summary_output=$SUMMARY_OUTPUT"
   jq -r '
     "selected_candidate_count=\(.selected_candidate_count)",
+    "eligible_candidate_pool_count=\(.eligible_candidate_pool_count)",
+    "selected_candidate_limit_reached=\(.selected_candidate_limit_reached)",
+    "unselected_eligible_candidate_count=\(.unselected_eligible_candidate_count)",
     "distinct_candidate_symbols=\(.distinct_candidate_symbols | join(","))",
     "allowed_horizons=\(.allowed_horizons | join(","))",
     "universe_mode=\(.universe_mode)",

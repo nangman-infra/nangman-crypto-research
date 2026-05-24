@@ -220,6 +220,9 @@ jq \
           universe_mode:($driver.manifest.universe_mode // null),
           dispatch_mode:($driver.manifest.dispatch_mode // null),
           selected_candidate_count:($driver.manifest.selected_candidate_count // null),
+          eligible_candidate_pool_count:($driver.manifest.eligible_candidate_pool_count // null),
+          selected_candidate_limit_reached:($driver.manifest.selected_candidate_limit_reached // null),
+          unselected_eligible_candidate_count:($driver.manifest.unselected_eligible_candidate_count // null),
           selected_current_approved_candidate_count:($driver.manifest.selected_current_approved_candidate_count // null),
           research_report_status:($driver.report.research_run_status // null),
           source_candidate_count:($driver.report.source_candidate_count // null),
@@ -347,7 +350,11 @@ jq \
     | ($latest_universe.observed_symbols // [] | unique_sorted) as $observed_symbols
     | ($latest_universe.approved_symbols // [] | unique_sorted) as $approved_symbols
     | ($candidate_symbols | intersect($approved_symbols)) as $candidate_symbols_in_approved_universe
+    | (($driver.manifest.eligible_candidate_symbols // $candidate_symbols) | unique_sorted) as $eligible_candidate_symbols
+    | (($driver.manifest.unselected_eligible_candidate_symbols // []) | unique_sorted) as $unselected_eligible_candidate_symbols
+    | ($eligible_candidate_symbols | intersect($approved_symbols)) as $eligible_candidate_symbols_in_approved_universe
     | ($approved_symbols - $candidate_symbols) as $approved_symbols_without_selected_candidate
+    | ($approved_symbols - $eligible_candidate_symbols) as $approved_symbols_without_eligible_candidate
     | ($rows | map(select((.replay_run_count // 0) > 0) | .primary_symbol) | unique_sorted) as $research_replayed_symbols
     | ($rows | map(select(.next_action == "promotion_gate_ready_for_review") | .primary_symbol) | unique_sorted) as $promotion_ready_symbols
     | ($rows | map(select(any((.gate_biases // [])[]?; startswith("PROMOTE"))) | .primary_symbol) | unique_sorted) as $promoted_symbols
@@ -362,10 +369,15 @@ jq \
     | ($research_replayed_candidate_ids - $promotion_ready_candidate_ids) as $replayed_candidate_ids_without_promotion_ready
     | ($research_replayed_candidate_ids - $promoted_candidate_ids) as $replayed_candidate_ids_without_promotion
     | (
-        if (($approved_symbols | length) > 0 and ($approved_symbols_without_selected_candidate | length) > 0)
-          then "candidate_generation_coverage"
-        elif (($candidate_ids_without_replay | length) > 0)
-          then "research_replay_coverage"
+            if (($approved_symbols | length) > 0 and ($approved_symbols_without_eligible_candidate | length) > 0)
+              then "candidate_generation_coverage"
+            elif (
+              (($driver.manifest.selected_candidate_limit_reached // false) == true)
+              and (($unselected_eligible_candidate_symbols | length) > 0)
+            )
+              then "research_manifest_selection_cap"
+            elif (($candidate_ids_without_replay | length) > 0)
+              then "research_replay_coverage"
         elif (($promotion_ready_symbols | length) > 0 and ((.stage_state.shadow_created // false) != true))
           then "shadow_review_gate"
         elif (($promoted_symbols | length) == 0)
@@ -389,8 +401,15 @@ jq \
           excluded_symbol_count:($latest_universe.excluded_symbol_count // null),
           candidate_symbol_count:($candidate_symbols | length),
           candidate_symbols:$candidate_symbols,
+          eligible_candidate_pool_count:($driver.manifest.eligible_candidate_pool_count // null),
+          selected_candidate_limit_reached:($driver.manifest.selected_candidate_limit_reached // null),
+          unselected_eligible_candidate_count:($driver.manifest.unselected_eligible_candidate_count // null),
+          eligible_candidate_symbols:$eligible_candidate_symbols,
+          unselected_eligible_candidate_symbols:$unselected_eligible_candidate_symbols,
           candidate_symbols_in_approved_universe:$candidate_symbols_in_approved_universe,
+          eligible_candidate_symbols_in_approved_universe:$eligible_candidate_symbols_in_approved_universe,
           approved_symbols_without_selected_candidate:$approved_symbols_without_selected_candidate,
+          approved_symbols_without_eligible_candidate:$approved_symbols_without_eligible_candidate,
           selected_symbols_not_in_approved_universe:(
             if ($approved_symbols | length) == 0 then []
             else ($candidate_symbols - $approved_symbols)
@@ -399,6 +418,11 @@ jq \
           candidate_symbol_coverage_of_approved_universe:(
             if ($approved_symbols | length) == 0 then null
             else (($candidate_symbols_in_approved_universe | length) / ($approved_symbols | length))
+            end
+          ),
+          eligible_candidate_symbol_coverage_of_approved_universe:(
+            if ($approved_symbols | length) == 0 then null
+            else (($eligible_candidate_symbols_in_approved_universe | length) / ($approved_symbols | length))
             end
           )
         },
@@ -430,7 +454,10 @@ jq \
           }
         },
         coverage_gaps:{
-          approved_symbols_without_candidate:$approved_symbols_without_selected_candidate,
+          approved_symbols_without_candidate:$approved_symbols_without_eligible_candidate,
+          approved_symbols_without_selected_candidate:$approved_symbols_without_selected_candidate,
+          approved_symbols_without_eligible_candidate:$approved_symbols_without_eligible_candidate,
+          unselected_eligible_candidate_symbols:$unselected_eligible_candidate_symbols,
           candidate_symbols_without_replay:$candidate_symbols_without_replay,
           candidate_ids_without_replay:$candidate_ids_without_replay,
           replayed_symbols_without_promotion_ready:$replayed_symbols_without_promotion_ready,
@@ -473,7 +500,10 @@ jq \
             promoted_candidates:($promoted_candidate_ids | length)
           },
           gap_counts:{
-            approved_symbols_without_candidate:($approved_symbols_without_selected_candidate | length),
+            approved_symbols_without_candidate:($approved_symbols_without_eligible_candidate | length),
+            approved_symbols_without_selected_candidate:($approved_symbols_without_selected_candidate | length),
+            approved_symbols_without_eligible_candidate:($approved_symbols_without_eligible_candidate | length),
+            unselected_eligible_candidate_symbols:($unselected_eligible_candidate_symbols | length),
             candidate_symbols_without_replay:($candidate_symbols_without_replay | length),
             candidate_ids_without_replay:($candidate_ids_without_replay | length),
             replayed_symbols_without_promotion_ready:($replayed_symbols_without_promotion_ready | length),
@@ -483,8 +513,11 @@ jq \
           },
           safe_next_actions:(
             [
-              if ($approved_symbols_without_selected_candidate | length) > 0
+              if ($approved_symbols_without_eligible_candidate | length) > 0
                 then "increase_candidate_generation_for_approved_major50_symbols"
+                else empty end,
+              if (($driver.manifest.selected_candidate_limit_reached // false) == true and ($unselected_eligible_candidate_symbols | length) > 0)
+                then "increase_research_batch_selection_limit_or_run_focused_manifest"
                 else empty end,
               if ($candidate_ids_without_replay | length) > 0
                 then "build_focused_research_manifest_for_unreplayed_candidate_symbols"

@@ -387,9 +387,12 @@ The checkpoint separates:
 ```text
 - verdict: current next decision, such as EXTEND_MARKET_L1_HORIZON_COVERAGE
 - selected_symbols and next_action_counts: top-level operator scan fields
-- major50_state: observed/approved universe counts and candidate symbol coverage
+- major50_state: observed/approved universe counts, selected candidate symbol
+  coverage, eligible candidate symbol coverage, and batch-cap exclusions
 - research_factory_progression: major-50 -> candidate -> replay -> promotion -> shadow/paper/live, separated by symbol and candidate id
-- coverage_gaps: approved symbols without candidates, candidate ids without replay, and replayed candidate ids without promotion
+- coverage_gaps: approved symbols without eligible candidates, approved symbols
+  outside the selected batch, candidate ids without replay, and replayed
+  candidate ids without promotion
 - research_factory_gap_summary: the current blocking stage and safe next actions
 - stage_state: candidate_generated, research_replay_completed, promotion_passed, shadow_created, paper_created, live_enabled
 - batch_state: selected candidates, replay count, RETEST/PROMOTE surface

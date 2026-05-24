@@ -317,7 +317,12 @@ jq -n \
       horizon_contract_invalid_candidate_count:$manifest_summary.horizon_contract_invalid_candidate_count,
       excluded_horizon_contract_violations:$manifest_summary.excluded_horizon_contract_violations,
       selected_candidate_count:$manifest_summary.selected_candidate_count,
+      eligible_candidate_pool_count:$manifest_summary.eligible_candidate_pool_count,
+      selected_candidate_limit_reached:$manifest_summary.selected_candidate_limit_reached,
+      unselected_eligible_candidate_count:$manifest_summary.unselected_eligible_candidate_count,
       distinct_candidate_symbols:$manifest_summary.distinct_candidate_symbols,
+      eligible_candidate_symbols:$manifest_summary.eligible_candidate_symbols,
+      unselected_eligible_candidate_symbols:$manifest_summary.unselected_eligible_candidate_symbols,
       allowed_horizons:$manifest_summary.allowed_horizons,
       selected_current_approved_candidate_count:$manifest_summary.selected_current_approved_candidate_count,
       selected_horizon_contract_valid_count:$manifest_summary.selected_horizon_contract_valid_count,
@@ -343,6 +348,8 @@ jq -r '
   "major50_approved_symbol_count=\(.major50_state.approved_symbol_count)",
   "research_factory_blocking_stage=\(.research_factory_gap_summary.blocking_stage)",
   "approved_symbols_without_candidate_count=\(.research_factory_gap_summary.gap_counts.approved_symbols_without_candidate)",
+  "approved_symbols_without_selected_candidate_count=\(.research_factory_gap_summary.gap_counts.approved_symbols_without_selected_candidate)",
+  "unselected_eligible_candidate_symbol_count=\(.research_factory_gap_summary.gap_counts.unselected_eligible_candidate_symbols)",
   "candidate_count=\(.horizon_summary.candidate_count)",
   "horizon_count=\(.horizon_summary.horizon_count)",
   "symbols=\(.horizon_summary.symbols | join(","))",
@@ -357,6 +364,9 @@ echo
   echo "retest_horizon_status=$RETEST_HORIZON_STATUS_OUTPUT"
   jq -r '
     "selected_candidate_count=\(.manifest.selected_candidate_count)",
+    "eligible_candidate_pool_count=\(.manifest.eligible_candidate_pool_count)",
+    "selected_candidate_limit_reached=\(.manifest.selected_candidate_limit_reached)",
+    "unselected_eligible_candidate_count=\(.manifest.unselected_eligible_candidate_count)",
     "current_approved_candidate_count=\(.manifest.current_approved_candidate_count)",
     "horizon_contract_invalid_candidate_count=\(.manifest.horizon_contract_invalid_candidate_count)",
     "distinct_candidate_symbols=\(.manifest.distinct_candidate_symbols | join(","))",
@@ -370,6 +380,8 @@ echo
   jq -r '
     "research_factory_blocking_stage=\(.research_factory_gap_summary.blocking_stage)",
     "approved_symbols_without_candidate_count=\(.research_factory_gap_summary.gap_counts.approved_symbols_without_candidate)",
+    "approved_symbols_without_selected_candidate_count=\(.research_factory_gap_summary.gap_counts.approved_symbols_without_selected_candidate)",
+    "unselected_eligible_candidate_symbol_count=\(.research_factory_gap_summary.gap_counts.unselected_eligible_candidate_symbols)",
     "candidate_ids_without_replay_count=\(.research_factory_gap_summary.gap_counts.candidate_ids_without_replay)"
   ' "$RETEST_HORIZON_STATUS_OUTPUT"
   echo "research current-approved batch driver completed"
