@@ -10,11 +10,13 @@ use crate::model::{
     IntelCandidateEvidenceBundle, MarketFeatureDelta, MarketRegimeContext,
     OSS_ADAPTER_RUN_SCHEMA_VERSION, OssAdapterRun, RESEARCH_INPUT_MANIFEST_SCHEMA_VERSION,
     ReplayRun, ReplayRunIndexRecord, ResearchArtifactRef, ResearchInputManifest,
-    ResearchRuntimeBudgetPolicy, SelectedMarketArtifactTrace, ShadowValidationRun,
+    ResearchRuntimeBudgetPolicy, SelectedMarketArtifactTrace, ShadowCycleSchedulerAction,
+    ShadowValidationRun,
 };
 use crate::paper::build_paper_artifacts;
 use crate::replay::{build_invalid_replay_run, run_native_replay};
 use crate::report::build_report;
+use crate::shadow_cycle::{read_shadow_cycle_decision, validate_shadow_cycle_decision};
 use crate::storage::{
     discover_latest_market_feature_delta_keys_from_s3,
     discover_latest_market_regime_context_keys_from_s3, discover_replay_run_index_keys_from_s3,
@@ -40,6 +42,7 @@ const DEFAULT_HISTORICAL_REPLAY_RUN_INDEX_SCAN_LIMIT: usize = 1_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Args {
+    pub shadow_cycle_decision_file: Option<PathBuf>,
     pub input_manifest_file: Option<PathBuf>,
     pub input_manifest_s3_bucket: Option<String>,
     pub input_manifest_s3_key: Option<String>,
@@ -73,6 +76,14 @@ pub struct Args {
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct RunSummary {
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub shadow_cycle_decisions_validated: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shadow_cycle_scheduler_action: Option<ShadowCycleSchedulerAction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shadow_cycle_run_not_before_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shadow_cycle_focused_research_manifest_file: Option<String>,
     pub processed_bundles: usize,
     pub replay_runs_created: usize,
     pub historical_replay_runs_loaded: usize,
@@ -88,11 +99,16 @@ pub struct RunSummary {
     pub output_files: Vec<String>,
 }
 
+fn is_zero(value: &usize) -> bool {
+    *value == 0
+}
+
 pub fn parse_args<I>(mut values: I) -> AppResult<Option<Args>>
 where
     I: Iterator<Item = String>,
 {
     let mut args = Args {
+        shadow_cycle_decision_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: env_string("RESEARCH_INPUT_MANIFEST_S3_BUCKET"),
         input_manifest_s3_key: env_string("RESEARCH_INPUT_MANIFEST_S3_KEY"),
@@ -131,6 +147,12 @@ where
     while let Some(arg) = values.next() {
         match arg.as_str() {
             "-h" | "--help" => return Ok(None),
+            "--shadow-cycle-decision-file" => {
+                args.shadow_cycle_decision_file = Some(absolute_path_arg(
+                    values.next(),
+                    "--shadow-cycle-decision-file requires an absolute path",
+                )?);
+            }
             "--input-manifest-file" => {
                 args.input_manifest_file = Some(absolute_path_arg(
                     values.next(),
@@ -316,6 +338,10 @@ where
         }
     }
 
+    if args.shadow_cycle_decision_file.is_some() {
+        return Ok(Some(args));
+    }
+
     if args.input_bundle_file.is_some()
         && (args.input_bundle_s3_bucket.is_some() || args.input_bundle_s3_key.is_some())
     {
@@ -390,6 +416,30 @@ where
 }
 
 pub async fn run(args: Args) -> AppResult<RunSummary> {
+    if let Some(path) = args.shadow_cycle_decision_file.as_deref() {
+        let decision = read_shadow_cycle_decision(path)?;
+        validate_shadow_cycle_decision(&decision)?;
+        return Ok(RunSummary {
+            shadow_cycle_decisions_validated: 1,
+            shadow_cycle_scheduler_action: Some(decision.scheduler_action),
+            shadow_cycle_run_not_before_ms: decision.run_not_before_ms,
+            shadow_cycle_focused_research_manifest_file: decision.focused_research_manifest_file,
+            processed_bundles: 0,
+            replay_runs_created: 0,
+            historical_replay_runs_loaded: 0,
+            oss_adapter_runs_loaded: 0,
+            shadow_validation_runs_loaded: 0,
+            shadow_validation_runs_created: 0,
+            paper_trade_candidates_created: 0,
+            paper_trade_runs_created: 0,
+            paper_trade_summaries_created: 0,
+            paper_trade_marks_created: 0,
+            portfolio_risk_reject_events_created: 0,
+            portfolio_reduce_only_signals_created: 0,
+            output_files: Vec::new(),
+        });
+    }
+
     let manifest = load_input_manifest(&args).await?;
     validate_input_manifest(manifest.as_ref())?;
     let budget = manifest
@@ -519,6 +569,10 @@ pub async fn run(args: Args) -> AppResult<RunSummary> {
     };
 
     Ok(RunSummary {
+        shadow_cycle_decisions_validated: 0,
+        shadow_cycle_scheduler_action: None,
+        shadow_cycle_run_not_before_ms: None,
+        shadow_cycle_focused_research_manifest_file: None,
         processed_bundles: bundles.len(),
         replay_runs_created: replay_runs.len(),
         historical_replay_runs_loaded: historical_replay_runs.len(),
@@ -1490,6 +1544,9 @@ Batch research input can be declared with a manifest:
   --input-manifest-file /Volumes/WD/Developments/nangman-crypto/data/examples/research-input-manifest.json
   --input-manifest-s3-bucket nangman-crypto-dev-research-<account-suffix>
   --input-manifest-s3-key research-input-manifest/schema=research_input_manifest_v1/run_id=.../manifest.json
+
+Shadow cycle scheduler decisions can be validated without running research:
+  --shadow-cycle-decision-file /tmp/nangman-crypto/research-current-approved-batch/<run-id>/shadow-cycle-decision.json
 
 Market L1 replay input can be loaded from S3 in ECS:
   --market-l1-s3-bucket nangman-crypto-dev-market-ingest-l1-<account-suffix>

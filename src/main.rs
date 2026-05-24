@@ -9,6 +9,10 @@ async fn main() {
         Ok(None) => {
             print_help();
             Ok(RunSummary {
+                shadow_cycle_decisions_validated: 0,
+                shadow_cycle_scheduler_action: None,
+                shadow_cycle_run_not_before_ms: None,
+                shadow_cycle_focused_research_manifest_file: None,
                 processed_bundles: 0,
                 replay_runs_created: 0,
                 historical_replay_runs_loaded: 0,
@@ -29,7 +33,7 @@ async fn main() {
 
     match result {
         Ok(summary) => {
-            if summary.processed_bundles > 0 {
+            if summary.processed_bundles > 0 || summary.shadow_cycle_decisions_validated > 0 {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&summary).unwrap_or_default()

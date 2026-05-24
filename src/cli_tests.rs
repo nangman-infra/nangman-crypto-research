@@ -1,4 +1,5 @@
 use super::*;
+use crate::model::ShadowCycleSchedulerAction;
 use crate::time::now_ms;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -253,6 +254,49 @@ fn oss_adapter_run_json(candidate_lifecycle_key: &str, verdict: &str) -> Value {
     })
 }
 
+fn shadow_cycle_wait_decision_json() -> Value {
+    json!({
+        "schema_version": "research_shadow_cycle_decision_v1",
+        "generated_at": "2026-05-24T12:16:00Z",
+        "decision_id": "shadow_cycle_decision:run:WAIT_FOR_PENDING_SHADOW_TARGET_WINDOW_MATERIALIZATION:1779670979756",
+        "source_cycle_summary_file": "/tmp/run/shadow-sample-accumulation-cycle-summary.json",
+        "run_dir": "/tmp/run",
+        "scheduler_action": "WAIT_UNTIL_PENDING_SHADOW_TARGET_WINDOW_MATERIALIZES",
+        "source_verdict": "WAIT_FOR_PENDING_SHADOW_TARGET_WINDOW_MATERIALIZATION",
+        "run_not_before_ms": 1_779_670_979_756_i64,
+        "run_not_before_at": "2026-05-25T01:02:59Z",
+        "run_not_before_source": "pending_shadow_target_exit_deadline_ms",
+        "focused_research_manifest_file": null,
+        "focused_research_summary_file": null,
+        "latest_l1_as_of_ms": null,
+        "shadow_sample_state": {
+            "shadow_validation_count": 24,
+            "target_window_materialized_count": 12,
+            "candidate_lifecycle_count": 6,
+            "partially_materialized_candidate_count": 6,
+            "pending_target_window_candidate_count": 6,
+            "total_sample_deficit": 168,
+            "symbols": ["BTC", "DOGE", "ETH", "SOL", "TON", "ZEC"]
+        },
+        "safe_next_actions": ["wait_for_pending_shadow_target_window_materialization"],
+        "blocked_actions": [
+            "do_not_mark_pending_shadow_passed_from_sample_counts_only",
+            "do_not_create_paper_without_completed_passed_shadow",
+            "do_not_enable_live_from_shadow_sample_gap_manifest"
+        ],
+        "safety": {
+            "s3_write": false,
+            "ecs_task_started": false,
+            "dispatcher_mode_changed": false,
+            "local_decision_only": true,
+            "shadow_status_mutated": false,
+            "paper_live_enabled": false,
+            "live_enabled": false,
+            "order_execution_enabled": false
+        }
+    })
+}
+
 #[test]
 fn parse_args_requires_absolute_input_path() {
     let error = parse_args(
@@ -266,6 +310,74 @@ fn parse_args_requires_absolute_input_path() {
     assert!(error.to_string().contains("absolute path"));
 }
 
+#[test]
+fn parse_args_requires_absolute_shadow_cycle_decision_path() {
+    let error = parse_args(
+        [
+            "--shadow-cycle-decision-file".to_owned(),
+            "relative.json".to_owned(),
+        ]
+        .into_iter(),
+    )
+    .expect_err("relative path should fail");
+    assert!(error.to_string().contains("absolute path"));
+}
+
+#[tokio::test]
+async fn shadow_cycle_decision_file_validates_without_research_inputs() {
+    let root = test_root("shadow-decision-cli");
+    let decision_file = root.join("shadow-cycle-decision.json");
+    write_json(&decision_file, &shadow_cycle_wait_decision_json());
+
+    let args = parse_args(
+        [
+            "--shadow-cycle-decision-file".to_owned(),
+            decision_file.display().to_string(),
+        ]
+        .into_iter(),
+    )
+    .expect("decision args parse")
+    .expect("decision args returned");
+    let summary = run(args).await.expect("decision validates");
+
+    assert_eq!(summary.shadow_cycle_decisions_validated, 1);
+    assert_eq!(
+        summary.shadow_cycle_scheduler_action,
+        Some(ShadowCycleSchedulerAction::WaitUntilPendingShadowTargetWindowMaterializes)
+    );
+    assert_eq!(
+        summary.shadow_cycle_run_not_before_ms,
+        Some(1_779_670_979_756)
+    );
+    assert_eq!(summary.shadow_cycle_focused_research_manifest_file, None);
+    assert_eq!(summary.processed_bundles, 0);
+    assert!(summary.output_files.is_empty());
+}
+
+#[tokio::test]
+async fn shadow_cycle_decision_file_rejects_order_execution_enabled() {
+    let root = test_root("shadow-decision-unsafe-cli");
+    let decision_file = root.join("shadow-cycle-decision.json");
+    let mut decision = shadow_cycle_wait_decision_json();
+    decision["safety"]["order_execution_enabled"] = json!(true);
+    write_json(&decision_file, &decision);
+
+    let args = parse_args(
+        [
+            "--shadow-cycle-decision-file".to_owned(),
+            decision_file.display().to_string(),
+        ]
+        .into_iter(),
+    )
+    .expect("decision args parse")
+    .expect("decision args returned");
+    let error = run(args)
+        .await
+        .expect_err("unsafe shadow cycle decision is rejected");
+
+    assert!(error.to_string().contains("paper/live/order execution"));
+}
+
 #[tokio::test]
 async fn valid_bundle_without_market_data_becomes_retest_report() {
     let root = test_root("missing-market");
@@ -274,6 +386,7 @@ async fn valid_bundle_without_market_data_becomes_retest_report() {
     write_json(&input, &bundle_json());
 
     let summary = run(Args {
+        shadow_cycle_decision_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
         input_manifest_s3_key: None,
@@ -326,6 +439,7 @@ async fn horizon_over_72h_is_invalid_input() {
     write_json(&input, &bundle);
 
     let summary = run(Args {
+        shadow_cycle_decision_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
         input_manifest_s3_key: None,
@@ -375,6 +489,7 @@ async fn oss_adapter_prune_bias_blocks_candidate_even_when_native_retest() {
     write_json(&oss, &oss_adapter_run_json("cand_001:v1", "PRUNE_BIAS"));
 
     let summary = run(Args {
+        shadow_cycle_decision_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
         input_manifest_s3_key: None,
@@ -434,6 +549,7 @@ async fn oss_adapter_holding_violation_fails_before_report() {
     write_json(&oss, &adapter);
 
     let error = run(Args {
+        shadow_cycle_decision_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
         input_manifest_s3_key: None,
@@ -499,6 +615,7 @@ async fn negative_market_replay_prunes_candidate() {
     );
 
     let summary = run(Args {
+        shadow_cycle_decision_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
         input_manifest_s3_key: None,
@@ -550,6 +667,7 @@ async fn partial_market_replay_window_stays_insufficient_until_horizon_materiali
     );
 
     let summary = run(Args {
+        shadow_cycle_decision_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
         input_manifest_s3_key: None,
@@ -625,6 +743,7 @@ async fn positive_single_replay_stays_retest_until_gate_evidence_exists() {
     );
 
     let summary = run(Args {
+        shadow_cycle_decision_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
         input_manifest_s3_key: None,
@@ -755,6 +874,7 @@ async fn aggregate_gate_accepts_materialized_liquidity_filter() {
     write_json(&regime, &Value::Array(regimes));
 
     let summary = run(Args {
+        shadow_cycle_decision_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
         input_manifest_s3_key: None,
@@ -843,6 +963,7 @@ async fn aggregate_gate_blocks_zero_volume_liquidity_filter() {
     );
 
     let summary = run(Args {
+        shadow_cycle_decision_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
         input_manifest_s3_key: None,
@@ -941,6 +1062,7 @@ async fn aggregate_gate_promotes_only_to_shadow_when_enterprise_blockers_clear()
     write_json(&regime, &Value::Array(regimes));
 
     let summary = run(Args {
+        shadow_cycle_decision_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
         input_manifest_s3_key: None,
@@ -1093,6 +1215,7 @@ async fn completed_shadow_validation_input_creates_paper_artifacts_without_live_
     write_json(&regime, &Value::Array(regimes));
 
     let shadow_summary = run(Args {
+        shadow_cycle_decision_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
         input_manifest_s3_key: None,
@@ -1141,6 +1264,7 @@ async fn completed_shadow_validation_input_creates_paper_artifacts_without_live_
     write_json(&completed_shadow_file, &Value::Array(completed_shadow_runs));
 
     let summary = run(Args {
+        shadow_cycle_decision_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
         input_manifest_s3_key: None,
@@ -1282,6 +1406,7 @@ async fn portfolio_rejects_critical_event_symbol_and_emits_reduce_only() {
     write_json(&regime, &Value::Array(regimes));
 
     let summary = run(Args {
+        shadow_cycle_decision_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
         input_manifest_s3_key: None,
@@ -1368,6 +1493,7 @@ async fn historical_replay_runs_are_loaded_into_decay_aware_aggregate() {
     write_json(&history_regime, &Value::Array(history_regimes));
 
     let history_summary = run(Args {
+        shadow_cycle_decision_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
         input_manifest_s3_key: None,
@@ -1433,6 +1559,7 @@ async fn historical_replay_runs_are_loaded_into_decay_aware_aggregate() {
     );
 
     let summary = run(Args {
+        shadow_cycle_decision_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
         input_manifest_s3_key: None,
@@ -1531,6 +1658,7 @@ async fn expired_historical_replay_runs_are_excluded_from_promotion_gate() {
     write_json(&history_regime, &Value::Array(history_regimes));
 
     let history_summary = run(Args {
+        shadow_cycle_decision_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
         input_manifest_s3_key: None,
@@ -1594,6 +1722,7 @@ async fn expired_historical_replay_runs_are_excluded_from_promotion_gate() {
     );
 
     let summary = run(Args {
+        shadow_cycle_decision_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
         input_manifest_s3_key: None,
@@ -1661,6 +1790,7 @@ async fn lookahead_mismatch_is_invalid_input() {
     write_json(&input, &bundle);
 
     let summary = run(Args {
+        shadow_cycle_decision_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
         input_manifest_s3_key: None,
@@ -1708,6 +1838,7 @@ async fn report_id_and_output_key_are_stable_without_now_ms() {
     write_json(&input, &bundle_json());
 
     let args = |output_dir: PathBuf| Args {
+        shadow_cycle_decision_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
         input_manifest_s3_key: None,
@@ -1857,6 +1988,7 @@ async fn manifest_batch_input_processes_multiple_candidate_refs() {
     );
 
     let summary = run(Args {
+        shadow_cycle_decision_file: None,
         input_manifest_file: Some(manifest),
         input_manifest_s3_bucket: None,
         input_manifest_s3_key: None,
@@ -1936,6 +2068,7 @@ async fn manifest_runtime_budget_blocks_oversized_batch() {
     );
 
     let error = run(Args {
+        shadow_cycle_decision_file: None,
         input_manifest_file: Some(manifest),
         input_manifest_s3_bucket: None,
         input_manifest_s3_key: None,
@@ -2028,6 +2161,7 @@ async fn derives_market_l1_s3_keys_from_candidate_bundle() {
     let bundles =
         vec![serde_json::from_value(bundle).expect("candidate bundle test json matches model")];
     let args = Args {
+        shadow_cycle_decision_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
         input_manifest_s3_key: None,
@@ -2140,6 +2274,7 @@ async fn market_s3_key_budget_is_enforced_before_reading_s3_objects() {
     let bundles =
         vec![serde_json::from_value(bundle).expect("candidate bundle test json matches model")];
     let args = Args {
+        shadow_cycle_decision_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
         input_manifest_s3_key: None,

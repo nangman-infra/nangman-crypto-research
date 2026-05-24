@@ -606,6 +606,19 @@ contract type is `ShadowCycleDecision`, and
 `run_not_before_ms`, focused research decisions without an absolute manifest
 path, and any decision that enables paper/live/order execution.
 
+Validate a scheduler decision with the app binary before wiring any scheduler:
+
+```bash
+cd /Volumes/WD/Developments/nangman-crypto/apps/research-app
+
+cargo run -- \
+  --shadow-cycle-decision-file /tmp/nangman-crypto/research-current-approved-batch/<run-id>/shadow-cycle-decision.json
+```
+
+This command only reads the local decision file and prints a validation
+summary. It does not run research, write outputs, start ECS, switch the
+dispatcher, or create shadow/paper/live artifacts.
+
 The cycle is local-only. It does not run ECS, switch the dispatcher, mutate
 shadow status, or create paper/live artifacts.
 
