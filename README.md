@@ -391,6 +391,43 @@ The batch driver writes this checkpoint automatically as
 outputs, start ECS tasks, switch the dispatcher, or create shadow/paper/live
 artifacts.
 
+## Shadow Validation Status
+
+Use the shadow validation status summary after a batch emits
+`shadow-validation-run/schema=shadow_validation_run_v1/.../part-000001.jsonl`.
+This checkpoint separates "PROMOTE_TO_SHADOW_BIAS exists" from "paper input is
+ready". Pending shadow runs are not paper-ready.
+
+```bash
+cd /Volumes/WD/Developments/nangman-crypto/apps/research-app
+
+RUN_DIR=/tmp/nangman-crypto/research-current-approved-batch/<run-id>
+SHADOW_FILE=/tmp/nangman-crypto/research-current-approved-batch/<run-id>/research-output/shadow-validation-run/<partition>/part-000001.jsonl
+
+scripts/summarize-shadow-validation-status.sh \
+  "$SHADOW_FILE" \
+  "$RUN_DIR/retest-horizon-status.json" \
+  > "$RUN_DIR/shadow-validation-status.json"
+```
+
+The summary reports:
+
+```text
+- shadow_validation_summary: pending/completed/failed/pass counts by symbol
+- paper_gate.paper_generation_precondition_met: true only for completed + passed shadow runs
+- paper_gate.blocked_actions: paper/live actions that must remain closed
+- safety: local-only, no S3 write, no ECS task, no dispatcher change
+```
+
+The paper precondition is intentionally strict:
+
+```text
+status == completed
+passed == true
+paper_trade_candidate_contract_version == paper_trade_candidate_v1
+termination_policy.no_order_execution == true
+```
+
 ## Market-L1 Coverage Gap Diagnosis
 
 Use the Market-L1 coverage gap diagnosis when the retest horizon status reports
