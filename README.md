@@ -267,6 +267,20 @@ The output separates these states:
 - live_enabled
 ```
 
+It also emits `coverage_gaps` and a machine-readable `next_decision`:
+
+```text
+- next_decision.verdict
+- next_decision.safe_next_actions
+- next_decision.blocked_actions
+- next_decision.safety
+- next_decision.evidence
+```
+
+`next_decision` is a scheduling handoff, not an execution command. It keeps
+the check read-only, records why automation should wait or continue, and keeps
+shadow/paper/live blocked unless the upstream evidence is present.
+
 The expected progression is:
 
 ```text

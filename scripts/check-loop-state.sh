@@ -443,6 +443,76 @@ jq -n \
     recent_candidates:$candidates,
     latest_research_report:$report,
     latest_prefixes:$prefixes,
+    coverage_gaps:{
+      approved_symbols_without_recent_candidate:(($universe.approved_symbols // []) - ($candidates.distinct_candidate_symbols // [])),
+      recent_candidate_symbols_without_replay:(
+        if ($report.present and (($report.top_symbols // []) | length) > 0) then
+          (($candidates.distinct_candidate_symbols // []) - ($report.top_symbols // []))
+        else
+          ($candidates.distinct_candidate_symbols // [])
+        end
+      ),
+      replayed_symbols_without_promotion:(
+        if ($report.promotion_bias_count == 0) then
+          ($report.top_symbols // [])
+        else
+          []
+        end
+      )
+    },
+    next_decision: (
+      (($universe.approved_symbols // []) - ($candidates.distinct_candidate_symbols // [])) as $candidate_gap
+      | {
+        schema_version:"research_loop_state_decision_v1",
+        verdict:(
+          if ($runtime.runtime_alive | not) then "RUNTIME_NOT_READY"
+          elif ($runtime.dispatcher_mode != "run_task") then "AUTO_RESEARCH_DISABLED"
+          elif ($universe.major_coverage_complete | not) then "WAIT_FOR_MAJOR50_OBSERVATION"
+          elif ($universe.approved_major_coverage_complete | not) then "WAIT_FOR_MAJOR50_APPROVAL"
+          elif (($candidate_gap | length) > 0) then "INCREASE_CANDIDATE_GENERATION_COVERAGE"
+          elif (($report.present | not) or $report.replay_run_count == 0) then "RUN_RESEARCH_REPLAY"
+          elif ($report.promotion_bias_count == 0 and $report.shadow_validation_count == 0) then "ACCUMULATE_RESEARCH_REPLAY_EVIDENCE"
+          elif ($prefixes.shadow_validation_run.key == null) then "REVIEW_PROMOTION_FOR_SHADOW"
+          elif ($prefixes.paper_trade_run.key == null) then "WAIT_FOR_PASSED_SHADOW_BEFORE_PAPER"
+          else "REVIEW_PAPER_PROGRESS"
+          end
+        ),
+        safe_next_actions:([
+          if ($runtime.dispatcher_mode != "run_task") then "keep_dispatcher_dry_run_until_output_write_and_duplicate_controls_are_approved" else empty end,
+          if ($universe.major_coverage_complete | not) then "wait_for_major50_observation" else empty end,
+          if ($universe.approved_major_coverage_complete | not) then "wait_for_major50_approval" else empty end,
+          if (($candidate_gap | length) > 0) then "increase_candidate_generation_for_approved_major50_symbols" else empty end,
+          if ($report.present and $report.replay_run_count > 0 and $report.promotion_bias_count == 0) then "keep_accumulating_completed_native_replay_samples" else empty end,
+          if (($report.present | not) or $report.replay_run_count == 0) then "run_research_replay_for_recent_candidates" else empty end,
+          if ($report.promotion_bias_count > 0 and $prefixes.shadow_validation_run.key == null) then "review_promotion_to_shadow_evidence" else empty end
+        ]),
+        blocked_actions:[
+          "do_not_create_shadow_without_promotion",
+          "do_not_create_paper_without_completed_passed_shadow",
+          "do_not_enable_live_from_loop_state"
+        ],
+        safety:{
+          read_only_check:true,
+          s3_write:false,
+          ecs_task_started:false,
+          dispatcher_mode_changed:false,
+          paper_live_enabled:false,
+          live_enabled:false,
+          order_execution_enabled:false
+        },
+        evidence:{
+          dispatcher_mode:$runtime.dispatcher_mode,
+          major50_observed:$universe.major_coverage_complete,
+          major50_approved:$universe.approved_major_coverage_complete,
+          approved_symbols_without_recent_candidate_count:($candidate_gap | length),
+          recent_candidate_symbol_count:$candidates.distinct_candidate_symbol_count,
+          research_replay_count:$report.replay_run_count,
+          promotion_bias_count:$report.promotion_bias_count,
+          shadow_output_present:($prefixes.shadow_validation_run.key != null),
+          paper_output_present:($prefixes.paper_trade_run.key != null)
+        }
+      }
+    ),
     bottlenecks:([
       if ($runtime.dispatcher_mode != "run_task") then "dispatcher_not_run_task" else empty end,
       if ($universe.major_coverage_complete | not) then "major50_observed_universe_incomplete" else empty end,
