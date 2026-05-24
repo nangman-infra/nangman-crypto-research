@@ -428,6 +428,42 @@ paper_trade_candidate_contract_version == paper_trade_candidate_v1
 termination_policy.no_order_execution == true
 ```
 
+## Shadow Observation Plan
+
+Use the shadow observation plan while shadow runs are still pending. It answers
+whether the target holding window has enough Market-L1 coverage to review, and
+whether the shadow sample requirement is proven yet. This does not complete or
+pass shadow runs.
+
+```bash
+cd /Volumes/WD/Developments/nangman-crypto/apps/research-app
+
+RUN_DIR=/tmp/nangman-crypto/research-current-approved-batch/<run-id>
+SHADOW_FILE=/tmp/nangman-crypto/research-current-approved-batch/<run-id>/research-output/shadow-validation-run/<partition>/part-000001.jsonl
+
+scripts/build-shadow-observation-plan.sh \
+  "$SHADOW_FILE" \
+  "$RUN_DIR/retest-horizon-status.json" \
+  > "$RUN_DIR/shadow-observation-plan.json"
+```
+
+The planner uses `retest-horizon-plan.json` through the status checkpoint to
+discover the latest Market-L1 `as_of` watermark. You can override it with the
+third argument or `RESEARCH_SHADOW_OBSERVATION_LATEST_L1_AS_OF_MS`.
+
+The checkpoint separates:
+
+```text
+- target_window_materialized_count: target hold window is covered by Market-L1
+- absolute_window_materialized_count: force-flat absolute deadline is covered
+- observed_shadow_run_count: shadow records seen for the symbol/candidate
+- required_shadow_sample_count: watch_window_policy.min_shadow_samples
+- blocked_actions: paper/live actions that remain closed
+```
+
+The output is local-only. It does not mark shadow as completed, does not write
+S3, does not start ECS tasks, and does not create paper/live artifacts.
+
 ## Market-L1 Coverage Gap Diagnosis
 
 Use the Market-L1 coverage gap diagnosis when the retest horizon status reports
