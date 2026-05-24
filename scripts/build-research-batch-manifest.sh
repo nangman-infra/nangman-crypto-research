@@ -536,12 +536,14 @@ list_latest_objects "$output_bucket" "replay-run-index/" "$HISTORICAL_INDEX_READ
 jq -n \
   --arg research_packet_id "$RESEARCH_PACKET_ID" \
   --arg run_scope "$RUN_SCOPE" \
-  --argjson candidates "$(cat "$selected_candidates_json")" \
-  --argjson indexes "$(cat "$historical_index_objects_json")" \
+  --slurpfile candidates_input "$selected_candidates_json" \
+  --slurpfile indexes_input "$historical_index_objects_json" \
   --argjson max_candidates "$MAX_CANDIDATE_BUNDLE_COUNT" \
   --argjson max_history "$MAX_HISTORICAL_REPLAY_RUN_REF_COUNT" \
   --argjson max_replay "$MAX_REPLAY_RUN_COUNT" \
-  '{
+  '($candidates_input[0] // []) as $candidates
+  | ($indexes_input[0] // []) as $indexes
+  | {
     schema_version:"research_input_manifest_v1",
     research_packet_id:$research_packet_id,
     run_scope:$run_scope,
@@ -569,11 +571,15 @@ jq -n \
   --arg research_packet_id "$RESEARCH_PACKET_ID" \
   --argjson candidate_read_limit "$CANDIDATE_READ_LIMIT" \
   --argjson max_candidate_bundle_count "$MAX_CANDIDATE_BUNDLE_COUNT" \
-  --argjson universe "$(cat "$universe_summary_json")" \
-  --argjson scanned_candidates "$(cat "$all_candidates_json")" \
-  --argjson candidates "$(cat "$selected_candidates_json")" \
-  --argjson indexes "$(cat "$historical_index_objects_json")" \
-  '
+  --slurpfile universe_input "$universe_summary_json" \
+  --slurpfile scanned_candidates_input "$all_candidates_json" \
+  --slurpfile candidates_input "$selected_candidates_json" \
+  --slurpfile indexes_input "$historical_index_objects_json" \
+  '($universe_input[0] // {}) as $universe
+  | ($scanned_candidates_input[0] // []) as $scanned_candidates
+  | ($candidates_input[0] // []) as $candidates
+  | ($indexes_input[0] // []) as $indexes
+  |
   def eligible_for_universe_mode:
     .batch_horizon_contract_valid == true
     and if $universe_mode == "current_approved" then .current_universe_approved == true
