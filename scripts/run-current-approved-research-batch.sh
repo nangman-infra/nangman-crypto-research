@@ -269,10 +269,10 @@ jq -n \
   --arg report_summary_file "$REPORT_SUMMARY_OUTPUT" \
   --arg retest_horizon_plan_file "$RETEST_HORIZON_PLAN_OUTPUT" \
   --arg retest_horizon_status_file "$RETEST_HORIZON_STATUS_OUTPUT" \
-  --slurpfile manifest_summary_file "$MANIFEST_SUMMARY_OUTPUT" \
+  --slurpfile manifest_summary_file_input "$MANIFEST_SUMMARY_OUTPUT" \
   --slurpfile report_summary_file_input "$REPORT_SUMMARY_OUTPUT" \
   --slurpfile retest_horizon_plan_file_input "$RETEST_HORIZON_PLAN_OUTPUT" \
-  '($manifest_summary_file[0] // {}) as $manifest_summary
+  '($manifest_summary_file_input[0] // {}) as $manifest_summary
   | ($report_summary_file_input[0] // {}) as $report_summary
   | ($retest_horizon_plan_file_input[0] // {}) as $retest_horizon_plan
   | {
