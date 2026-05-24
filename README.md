@@ -494,6 +494,42 @@ The manifest separates:
 The output is local-only. It does not mutate shadow status, does not write S3,
 does not start ECS tasks, and does not create paper/live artifacts.
 
+## Shadow Sample Accumulation Manifest
+
+Use the accumulation manifest after the sample gap manifest reports
+`ACCUMULATE_SHADOW_SAMPLES_BEFORE_COMPLETION`. It maps the deficient shadow
+candidate lifecycle keys back to the source research manifest and creates a
+focused `research_input_manifest_v1` for the next local research pass.
+
+```bash
+cd /Volumes/WD/Developments/nangman-crypto/apps/research-app
+
+RUN_DIR=/tmp/nangman-crypto/research-current-approved-batch/<run-id>
+
+RESEARCH_SHADOW_ACCUMULATION_MANIFEST_OUTPUT="$RUN_DIR/shadow-accumulation-input-manifest.json" \
+RESEARCH_SHADOW_ACCUMULATION_SUMMARY_OUTPUT="$RUN_DIR/shadow-accumulation-input-manifest.summary.json" \
+scripts/build-shadow-sample-accumulation-manifest.sh \
+  "$RUN_DIR/shadow-sample-gap-manifest.json" \
+  "$RUN_DIR/retest-horizon-status.json" \
+  "$RUN_DIR/research-input-manifest.json"
+```
+
+The summary reports:
+
+```text
+- backlog_candidate_lifecycle_count: lifecycle keys still short of shadow samples
+- total_sample_deficit: remaining required observations
+- status_candidate_count: candidate ids mapped from the horizon status checkpoint
+- selected_candidate_bundle_ref_count: refs copied into the focused manifest
+- missing_candidate_ref_count: mapped candidates absent from the source manifest
+- blocked_actions: shadow/paper/live actions that must remain closed
+```
+
+The output is local-only. It does not mutate shadow status, does not write S3,
+does not start ECS tasks, and does not create paper/live artifacts. After a
+local run with the focused manifest, rebuild the shadow observation plan and
+sample gap manifest before considering any completed shadow review.
+
 ## Market-L1 Coverage Gap Diagnosis
 
 Use the Market-L1 coverage gap diagnosis when the retest horizon status reports
