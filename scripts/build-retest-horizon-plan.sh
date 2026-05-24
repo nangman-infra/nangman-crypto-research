@@ -100,7 +100,8 @@ if [[ -z "$LATEST_L1_AS_OF_MS" ]]; then
 fi
 
 bundle_jsonl="$(mktemp)"
-trap 'rm -f "$bundle_jsonl"' EXIT
+bundles_json_file="$(mktemp)"
+trap 'rm -f "$bundle_jsonl" "$bundles_json_file"' EXIT
 
 while IFS= read -r uri; do
   [[ -n "$uri" ]] || continue
@@ -112,13 +113,13 @@ if [[ ! -s "$bundle_jsonl" ]]; then
   exit 1
 fi
 
-bundles_json="$(jq -s '.' "$bundle_jsonl")"
+jq -s '.' "$bundle_jsonl" > "$bundles_json_file"
 
 jq \
   --arg manifest_file "$MANIFEST_FILE" \
   --arg report_file "$REPORT_FILE" \
   --arg latest_l1_as_of_ms "$LATEST_L1_AS_OF_MS" \
-  --argjson bundles "$bundles_json" \
+  --slurpfile bundles_file "$bundles_json_file" \
   '
     def horizon_ms($h):
       if $h == "1h" then 3600000
@@ -137,7 +138,8 @@ jq \
     def latest_as_of:
       if $latest_l1_as_of_ms == "" then null else ($latest_l1_as_of_ms | tonumber) end;
 
-    . as $report
+    ($bundles_file[0] // []) as $bundles
+    | . as $report
     | ($report.research_gate_policy.min_completed_samples_for_shadow // 30) as $min_completed
     | ($report.partition_aggregates // []) as $aggregates
     | latest_as_of as $latest_l1

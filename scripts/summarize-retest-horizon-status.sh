@@ -30,25 +30,41 @@ require_absolute_file "RESEARCH_RETEST_HORIZON_PLAN_FILE or first argument" "$PL
 
 if [[ -n "$DRIVER_SUMMARY_FILE" ]]; then
   require_absolute_file "RESEARCH_BATCH_DRIVER_SUMMARY_FILE or second argument" "$DRIVER_SUMMARY_FILE"
-  driver_summary_json="$(cat "$DRIVER_SUMMARY_FILE")"
   driver_manifest_summary_file="$(jq -r '.manifest_summary_file // empty' "$DRIVER_SUMMARY_FILE")"
   if [[ -n "$driver_manifest_summary_file" && -f "$driver_manifest_summary_file" ]]; then
-    driver_manifest_summary_json="$(cat "$driver_manifest_summary_file")"
+    DRIVER_MANIFEST_SUMMARY_FILE="$driver_manifest_summary_file"
   else
-    driver_manifest_summary_json="null"
+    DRIVER_MANIFEST_SUMMARY_FILE=""
   fi
 else
-  driver_summary_json="null"
-  driver_manifest_summary_json="null"
+  DRIVER_MANIFEST_SUMMARY_FILE=""
+fi
+
+driver_summary_input="$(mktemp)"
+driver_manifest_summary_input="$(mktemp)"
+trap 'rm -f "$driver_summary_input" "$driver_manifest_summary_input"' EXIT
+
+if [[ -n "$DRIVER_SUMMARY_FILE" ]]; then
+  cp "$DRIVER_SUMMARY_FILE" "$driver_summary_input"
+else
+  printf 'null\n' > "$driver_summary_input"
+fi
+
+if [[ -n "$DRIVER_MANIFEST_SUMMARY_FILE" ]]; then
+  cp "$DRIVER_MANIFEST_SUMMARY_FILE" "$driver_manifest_summary_input"
+else
+  printf 'null\n' > "$driver_manifest_summary_input"
 fi
 
 jq \
   --arg generated_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   --arg plan_file "$PLAN_FILE" \
   --arg driver_summary_file "$DRIVER_SUMMARY_FILE" \
-  --argjson driver_summary "$driver_summary_json" \
-  --argjson driver_manifest_summary "$driver_manifest_summary_json" \
-  '
+  --slurpfile driver_summary_input "$driver_summary_input" \
+  --slurpfile driver_manifest_summary_input "$driver_manifest_summary_input" \
+  '($driver_summary_input[0] // null) as $driver_summary
+  | ($driver_manifest_summary_input[0] // null) as $driver_manifest_summary
+  |
     def unique_sorted: unique | sort;
     def intersect($other):
       map(select(. as $value | ($other | index($value)) != null));
