@@ -505,6 +505,19 @@ current_approved_shard_batch_summary="$(jq -s -c '
   | last // empty_batch
 ' "$report_records_json")"
 
+recent_research_report_coverage_summary="$(jq -s -c '
+  {
+    schema_version:"research_recent_report_coverage_summary_v1",
+    selection:"recent_research_reports",
+    report_read_count:length,
+    replayed_symbols:(map((.partition_symbols // [])[]?, (.top_symbols // [])[]?) | unique | sort),
+    replayed_symbol_count:(map((.partition_symbols // [])[]?, (.top_symbols // [])[]?) | unique | length),
+    latest_last_modified:(map(.last_modified) | max // null),
+    statuses:(map(.research_run_status) | unique | sort),
+    run_scopes:(map(.run_scope // "unknown") | unique | sort)
+  }
+' "$report_records_json")"
+
 research_evidence_summary="$(jq -n -c \
   --argjson latest "$report_summary" \
   --argjson shard_batch "$current_approved_shard_batch_summary" '
@@ -545,6 +558,7 @@ jq -n \
   --argjson candidates "$candidate_summary" \
   --argjson report "$report_summary" \
   --argjson current_approved_shard_batch "$current_approved_shard_batch_summary" \
+  --argjson recent_report_coverage "$recent_research_report_coverage_summary" \
   --argjson research "$research_evidence_summary" \
   --argjson prefixes "$prefix_summary" \
   '{
@@ -571,12 +585,15 @@ jq -n \
     recent_candidates:$candidates,
     latest_research_report:$report,
     best_current_approved_shard_batch:$current_approved_shard_batch,
+    recent_research_report_coverage:$recent_report_coverage,
     research_evidence:$research,
     latest_prefixes:$prefixes,
     coverage_gaps:{
       approved_symbols_without_recent_candidate:(($universe.approved_symbols // []) - ($candidates.distinct_candidate_symbols // [])),
       recent_candidate_symbols_without_replay:(
-        if ($research.present and (($research.top_symbols // []) | length) > 0) then
+        if (($recent_report_coverage.replayed_symbols // []) | length) > 0 then
+          (($candidates.distinct_candidate_symbols // []) - ($recent_report_coverage.replayed_symbols // []))
+        elif ($research.present and (($research.top_symbols // []) | length) > 0) then
           (($candidates.distinct_candidate_symbols // []) - ($research.top_symbols // []))
         else
           ($candidates.distinct_candidate_symbols // [])

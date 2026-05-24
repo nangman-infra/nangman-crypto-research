@@ -329,7 +329,10 @@ It also emits `coverage_gaps` and a machine-readable `next_decision`:
 
 The output keeps `latest_research_report` as the newest single report, but uses
 `best_current_approved_shard_batch` and `research_evidence` to avoid treating a
-small dispatcher smoke report as the whole research coverage surface.
+small dispatcher smoke report as the whole research coverage surface. It also
+emits `recent_research_report_coverage`; coverage-gap calculations use this
+recent report symbol union so a focused replay can close a single-symbol replay
+gap without rerunning the whole current-approved batch.
 
 `next_decision` is a scheduling handoff, not an execution command. It keeps
 the check read-only, records why automation should wait or continue, and keeps
