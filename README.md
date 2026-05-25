@@ -711,6 +711,24 @@ This command only reads the local decision file and prints a validation
 summary. It does not run research, write outputs, start ECS, switch the
 dispatcher, or create shadow/paper/live artifacts.
 
+The app can also build the same scheduler decision directly from
+`shadow_validation_run_v1` inputs. This is the ECS-friendly path because the
+container no longer needs the local shell/JQ cycle just to decide whether to
+wait, hold for review, or prepare the next research pass.
+
+```bash
+cd /Volumes/WD/Developments/nangman-crypto/apps/research-app
+
+cargo run -- \
+  --build-shadow-cycle-decision \
+  --shadow-validation-run-file /tmp/nangman-crypto/research-current-approved-batch/<run-id>/shadow-validation-run.jsonl \
+  --shadow-cycle-latest-l1-as-of-ms 1779696900000 \
+  --shadow-cycle-decision-output-file /tmp/nangman-crypto/research-current-approved-batch/<run-id>/shadow-cycle-decision.json
+```
+
+The generated decision keeps `paper_live_enabled=false`,
+`live_enabled=false`, and `order_execution_enabled=false`.
+
 The cycle is local-only. It does not run ECS, switch the dispatcher, mutate
 shadow status, or create paper/live artifacts.
 
