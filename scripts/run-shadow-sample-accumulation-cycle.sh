@@ -7,7 +7,11 @@ if [[ $# -gt 0 ]]; then
 fi
 
 SOURCE_MANIFEST_FILE="${RESEARCH_SHADOW_CYCLE_SOURCE_MANIFEST_FILE:-${RUN_DIR%/}/research-input-manifest.json}"
-HORIZON_STATUS_FILE="${RESEARCH_SHADOW_CYCLE_RETEST_HORIZON_STATUS_FILE:-${RUN_DIR%/}/retest-horizon-status.json}"
+DEFAULT_HORIZON_STATUS_FILE="${RUN_DIR%/}/retest-horizon-status.json"
+HORIZON_STATUS_FILE="${RESEARCH_SHADOW_CYCLE_RETEST_HORIZON_STATUS_FILE:-}"
+if [[ -z "$HORIZON_STATUS_FILE" && -f "$DEFAULT_HORIZON_STATUS_FILE" ]]; then
+  HORIZON_STATUS_FILE="$DEFAULT_HORIZON_STATUS_FILE"
+fi
 MERGED_SHADOW_FILE="${RESEARCH_SHADOW_CYCLE_MERGED_SHADOW_FILE:-${RUN_DIR%/}/shadow-validation-merged.jsonl}"
 if [[ "$MERGED_SHADOW_FILE" == *.jsonl ]]; then
   MERGED_SHADOW_SUMMARY_FILE="${MERGED_SHADOW_FILE%.jsonl}.summary.json"
@@ -78,7 +82,9 @@ if [[ ! -d "$RUN_DIR" ]]; then
   exit 1
 fi
 require_absolute_file "RESEARCH_SHADOW_CYCLE_SOURCE_MANIFEST_FILE" "$SOURCE_MANIFEST_FILE"
-require_absolute_file "RESEARCH_SHADOW_CYCLE_RETEST_HORIZON_STATUS_FILE" "$HORIZON_STATUS_FILE"
+if [[ -n "$HORIZON_STATUS_FILE" ]]; then
+  require_absolute_file "RESEARCH_SHADOW_CYCLE_RETEST_HORIZON_STATUS_FILE" "$HORIZON_STATUS_FILE"
+fi
 require_absolute_path "RESEARCH_SHADOW_CYCLE_MERGED_SHADOW_FILE" "$MERGED_SHADOW_FILE"
 require_absolute_path "RESEARCH_SHADOW_CYCLE_OBSERVATION_PLAN_FILE" "$OBSERVATION_PLAN_FILE"
 require_absolute_path "RESEARCH_SHADOW_CYCLE_GAP_MANIFEST_FILE" "$GAP_MANIFEST_FILE"
@@ -150,14 +156,19 @@ fi
 
 gap_verdict="$(jq -r '.next_decision.verdict // "UNKNOWN"' "$GAP_MANIFEST_FILE")"
 accumulation_created=false
+accumulation_blocked_reason=""
 if [[ "$gap_verdict" == "ACCUMULATE_SHADOW_SAMPLES_BEFORE_COMPLETION" ]]; then
-  RESEARCH_SHADOW_ACCUMULATION_MANIFEST_OUTPUT="$ACCUMULATION_MANIFEST_FILE" \
-  RESEARCH_SHADOW_ACCUMULATION_SUMMARY_OUTPUT="$ACCUMULATION_SUMMARY_FILE" \
-    "${script_dir}/build-shadow-sample-accumulation-manifest.sh" \
-      "$GAP_MANIFEST_FILE" \
-      "$HORIZON_STATUS_FILE" \
-      "$SOURCE_MANIFEST_FILE" >&2
-  accumulation_created=true
+  if [[ -n "$HORIZON_STATUS_FILE" ]]; then
+    RESEARCH_SHADOW_ACCUMULATION_MANIFEST_OUTPUT="$ACCUMULATION_MANIFEST_FILE" \
+    RESEARCH_SHADOW_ACCUMULATION_SUMMARY_OUTPUT="$ACCUMULATION_SUMMARY_FILE" \
+      "${script_dir}/build-shadow-sample-accumulation-manifest.sh" \
+        "$GAP_MANIFEST_FILE" \
+        "$HORIZON_STATUS_FILE" \
+        "$SOURCE_MANIFEST_FILE" >&2
+    accumulation_created=true
+  else
+    accumulation_blocked_reason="missing_retest_horizon_status_file"
+  fi
 fi
 
 if [[ "$accumulation_created" == true ]]; then
@@ -166,6 +177,7 @@ if [[ "$accumulation_created" == true ]]; then
     --arg run_dir "$RUN_DIR" \
     --arg source_manifest_file "$SOURCE_MANIFEST_FILE" \
     --arg horizon_status_file "$HORIZON_STATUS_FILE" \
+    --arg accumulation_blocked_reason "$accumulation_blocked_reason" \
     --arg merged_shadow_file "$MERGED_SHADOW_FILE" \
     --arg observation_plan_file "$OBSERVATION_PLAN_FILE" \
     --arg gap_manifest_file "$GAP_MANIFEST_FILE" \
@@ -184,13 +196,14 @@ if [[ "$accumulation_created" == true ]]; then
       generated_at:$generated_at,
       run_dir:$run_dir,
       source_manifest_file:$source_manifest_file,
-      retest_horizon_status_file:$horizon_status_file,
+      retest_horizon_status_file:(if $horizon_status_file == "" then null else $horizon_status_file end),
       shadow_input_files:$shadow_input_files,
       merged_shadow_file:$merged_shadow_file,
       observation_plan_file:$observation_plan_file,
       gap_manifest_file:$gap_manifest_file,
       accumulation_manifest_file:$accumulation_manifest_file,
       accumulation_summary_file:$accumulation_summary_file,
+      accumulation_blocked_reason:(if $accumulation_blocked_reason == "" then null else $accumulation_blocked_reason end),
       cycle_summary_file:$cycle_summary_file,
       decision_file:$decision_file,
       latest_l1_as_of_ms:(if $latest_l1_as_of_ms == "" then null else ($latest_l1_as_of_ms | tonumber) end),
@@ -226,6 +239,7 @@ else
     --arg run_dir "$RUN_DIR" \
     --arg source_manifest_file "$SOURCE_MANIFEST_FILE" \
     --arg horizon_status_file "$HORIZON_STATUS_FILE" \
+    --arg accumulation_blocked_reason "$accumulation_blocked_reason" \
     --arg merged_shadow_file "$MERGED_SHADOW_FILE" \
     --arg observation_plan_file "$OBSERVATION_PLAN_FILE" \
     --arg gap_manifest_file "$GAP_MANIFEST_FILE" \
@@ -241,13 +255,14 @@ else
       generated_at:$generated_at,
       run_dir:$run_dir,
       source_manifest_file:$source_manifest_file,
-      retest_horizon_status_file:$horizon_status_file,
+      retest_horizon_status_file:(if $horizon_status_file == "" then null else $horizon_status_file end),
       shadow_input_files:$shadow_input_files,
       merged_shadow_file:$merged_shadow_file,
       observation_plan_file:$observation_plan_file,
       gap_manifest_file:$gap_manifest_file,
       accumulation_manifest_file:null,
       accumulation_summary_file:null,
+      accumulation_blocked_reason:(if $accumulation_blocked_reason == "" then null else $accumulation_blocked_reason end),
       cycle_summary_file:$cycle_summary_file,
       decision_file:$decision_file,
       latest_l1_as_of_ms:(if $latest_l1_as_of_ms == "" then null else ($latest_l1_as_of_ms | tonumber) end),
@@ -278,11 +293,12 @@ jq -n \
   --arg generated_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   --slurpfile cycle "$CYCLE_SUMMARY_FILE" \
   '
-    def scheduler_action($verdict):
+    def scheduler_action($verdict; $focused_research_manifest_file; $accumulation_blocked_reason):
       if $verdict == "DISCOVER_LATEST_MARKET_L1_AS_OF" then "DISCOVER_MARKET_L1_WATERMARK"
       elif $verdict == "WAIT_FOR_TARGET_HOLDING_WINDOW" then "WAIT_UNTIL_TARGET_WINDOW_MATERIALIZES"
       elif $verdict == "WAIT_FOR_PENDING_SHADOW_TARGET_WINDOW_MATERIALIZATION" then "WAIT_UNTIL_PENDING_SHADOW_TARGET_WINDOW_MATERIALIZES"
-      elif $verdict == "ACCUMULATE_SHADOW_SAMPLES_BEFORE_COMPLETION" then "RUN_FOCUSED_SHADOW_SAMPLE_ACCUMULATION_RESEARCH"
+      elif $verdict == "ACCUMULATE_SHADOW_SAMPLES_BEFORE_COMPLETION" and $focused_research_manifest_file != null then "RUN_FOCUSED_SHADOW_SAMPLE_ACCUMULATION_RESEARCH"
+      elif $verdict == "ACCUMULATE_SHADOW_SAMPLES_BEFORE_COMPLETION" and $accumulation_blocked_reason == "missing_retest_horizon_status_file" then "HOLD_FOR_OPERATOR_REVIEW"
       elif $verdict == "REVIEW_SHADOW_COMPLETION_EVIDENCE" then "REVIEW_SHADOW_COMPLETION_EVIDENCE"
       elif $verdict == "NO_SHADOW_SAMPLE_GAP_DETECTED" then "NOOP"
       elif $verdict == "NO_SHADOW_CANDIDATES" then "NOOP"
@@ -293,7 +309,7 @@ jq -n \
 
     ($cycle[0] // {}) as $summary
     | ($summary.next_decision.verdict // "UNKNOWN") as $verdict
-    | scheduler_action($verdict) as $action
+    | scheduler_action($verdict; ($summary.accumulation_manifest_file // null); ($summary.accumulation_blocked_reason // null)) as $action
     | ($summary.next_decision.next_observation_not_before_ms // null) as $not_before_ms
     | {
         schema_version:"research_shadow_cycle_decision_v1",
