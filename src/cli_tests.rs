@@ -1322,6 +1322,100 @@ fn focused_retest_dispatch_packet_id_is_stable_for_same_refresh_inputs() {
     );
 }
 
+#[test]
+fn shadow_accumulation_dispatch_filters_manifest_to_deficient_lifecycle_keys() {
+    let args = default_args();
+    let state = retest_cycle_source_state();
+    let source_manifest: crate::model::ResearchInputManifest =
+        serde_json::from_value(focused_retest_source_manifest_json())
+            .expect("source manifest parses");
+    let status = focused_retest_run_now_status_json();
+
+    let dispatch = build_shadow_accumulation_manifest_dispatch(
+        &args,
+        &state,
+        &status,
+        &source_manifest,
+        Some(7_201_300),
+        7_400_000,
+        vec!["cand_focus:v1".to_owned(), "missing:v1".to_owned()],
+    )
+    .expect("shadow accumulation dispatch builds")
+    .expect("shadow accumulation dispatch is selected");
+
+    assert!(dispatch.key.starts_with(
+        "research-input-manifest/schema=research_input_manifest_v1/dedupe_key=research_shadow_accumulation_"
+    ));
+    assert_eq!(
+        dispatch.manifest.run_scope.as_deref(),
+        Some("shadow_sample_accumulation_local_validation")
+    );
+    assert_eq!(dispatch.manifest.candidate_bundle_refs.len(), 1);
+    assert!(
+        dispatch.manifest.candidate_bundle_refs[0]
+            .uri
+            .contains("candidate_id=cand_focus")
+    );
+    assert_eq!(dispatch.manifest.historical_replay_run_index_refs.len(), 1);
+    assert_eq!(dispatch.focused_horizon_count, 1);
+    assert_eq!(dispatch.focused_candidate_bundle_refs, 1);
+    assert_eq!(
+        dispatch.deficit_lifecycle_keys,
+        vec!["cand_focus:v1".to_owned(), "missing:v1".to_owned()]
+    );
+}
+
+#[test]
+fn shadow_accumulation_dispatch_skips_empty_deficit_keys() {
+    let args = default_args();
+    let state = retest_cycle_source_state();
+    let source_manifest: crate::model::ResearchInputManifest =
+        serde_json::from_value(focused_retest_source_manifest_json())
+            .expect("source manifest parses");
+    let status = focused_retest_run_now_status_json();
+
+    let dispatch = build_shadow_accumulation_manifest_dispatch(
+        &args,
+        &state,
+        &status,
+        &source_manifest,
+        Some(7_201_300),
+        7_400_000,
+        Vec::new(),
+    )
+    .expect("empty deficit keys are valid");
+
+    assert!(dispatch.is_none());
+}
+
+fn retest_cycle_source_state() -> RetestCycleSourceState {
+    RetestCycleSourceState {
+        schema_version: RETEST_CYCLE_SOURCE_STATE_SCHEMA_VERSION.to_owned(),
+        generated_at_ms: 7_300_000,
+        research_packet_id: "source_packet".to_owned(),
+        run_scope: "focused_retest_local_validation".to_owned(),
+        source_manifest_s3_bucket: "research-bucket".to_owned(),
+        source_manifest_s3_key:
+            "research-input-manifest/schema=research_input_manifest_v1/source/manifest.json"
+                .to_owned(),
+        source_research_report_s3_bucket: "research-bucket".to_owned(),
+        source_research_report_s3_key:
+            "research-run-report/schema=research_run_report_v1/report.json".to_owned(),
+        source_research_report_id: "research_report_source".to_owned(),
+        source_candidate_ids: vec!["cand_focus".to_owned()],
+        replay_run_id_count: 1,
+        summary_findings_count: 1,
+        shadow_validation_run_count: 0,
+        paper_trade_candidate_count: 0,
+        safety: RetestCycleSourceStateSafety {
+            dispatcher_prefix: "research-input-manifest/".to_owned(),
+            state_s3_write: true,
+            ecs_task_started: false,
+            shadow_paper_live_enabled: false,
+        },
+    }
+}
+
 async fn write_refresh_cycle_inputs(root: &Path) -> (PathBuf, PathBuf) {
     let bundle =
         root.join("candidate-evidence-bundle/priority=p0/candidate_id=cand_001/part-000001.json");

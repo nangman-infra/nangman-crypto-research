@@ -2084,6 +2084,15 @@ struct ShadowAccumulationDispatch {
     deficit_lifecycle_keys: Vec<String>,
 }
 
+#[derive(Debug)]
+struct ShadowAccumulationManifestDispatch {
+    key: String,
+    manifest: ResearchInputManifest,
+    focused_horizon_count: usize,
+    focused_candidate_bundle_refs: usize,
+    deficit_lifecycle_keys: Vec<String>,
+}
+
 async fn try_build_shadow_accumulation_manifest_from_latest_state(
     args: &Args,
     shadow_runs: &[ShadowValidationRun],
@@ -2092,9 +2101,6 @@ async fn try_build_shadow_accumulation_manifest_from_latest_state(
 ) -> AppResult<Option<ShadowAccumulationDispatch>> {
     let deficit_lifecycle_keys =
         shadow_sample_deficit_lifecycle_keys(shadow_runs, latest_l1_as_of_ms);
-    if deficit_lifecycle_keys.is_empty() {
-        return Ok(None);
-    }
     let Some(bucket) = args.output_s3_bucket.as_deref() else {
         return Ok(None);
     };
@@ -2115,9 +2121,53 @@ async fn try_build_shadow_accumulation_manifest_from_latest_state(
     .await?;
     validate_input_manifest(Some(&source_manifest))?;
 
-    let mut build = match build_focused_retest_manifest(
+    let Some(dispatch_build) = build_shadow_accumulation_manifest_dispatch(
+        args,
+        &state,
         &status,
         &source_manifest,
+        latest_l1_as_of_ms,
+        output_partition_at_ms,
+        deficit_lifecycle_keys,
+    )?
+    else {
+        return Ok(None);
+    };
+
+    let write_result = write_research_input_manifest_to_exact_s3_key_if_absent(
+        bucket,
+        &dispatch_build.key,
+        &dispatch_build.manifest,
+    )
+    .await?;
+    let created = write_result.is_some();
+    let manifest_uri =
+        write_result.unwrap_or_else(|| format!("s3://{bucket}/{}", dispatch_build.key));
+
+    Ok(Some(ShadowAccumulationDispatch {
+        manifest_uri,
+        created,
+        focused_horizon_count: dispatch_build.focused_horizon_count,
+        focused_candidate_bundle_refs: dispatch_build.focused_candidate_bundle_refs,
+        deficit_lifecycle_keys: dispatch_build.deficit_lifecycle_keys,
+    }))
+}
+
+fn build_shadow_accumulation_manifest_dispatch(
+    args: &Args,
+    state: &RetestCycleSourceState,
+    status: &serde_json::Value,
+    source_manifest: &ResearchInputManifest,
+    latest_l1_as_of_ms: Option<i64>,
+    output_partition_at_ms: i64,
+    deficit_lifecycle_keys: Vec<String>,
+) -> AppResult<Option<ShadowAccumulationManifestDispatch>> {
+    if deficit_lifecycle_keys.is_empty() {
+        return Ok(None);
+    }
+    let mut build = match build_focused_retest_manifest(
+        status,
+        source_manifest,
         &FocusedRetestBuildOptions {
             generated_at_ms: output_partition_at_ms,
             research_packet_id: "research_shadow_accumulation_pending".to_owned(),
@@ -2137,22 +2187,17 @@ async fn try_build_shadow_accumulation_manifest_from_latest_state(
         Err(error) => return Err(error),
     };
     let packet_id = shadow_accumulation_dispatch_packet_id(
-        &state,
+        state,
         latest_l1_as_of_ms,
         &deficit_lifecycle_keys,
         &build,
     )?;
     build.manifest.research_packet_id = Some(packet_id.clone());
     let key = focused_retest_dispatch_manifest_s3_key(&packet_id)?;
-    let write_result =
-        write_research_input_manifest_to_exact_s3_key_if_absent(bucket, &key, &build.manifest)
-            .await?;
-    let created = write_result.is_some();
-    let manifest_uri = write_result.unwrap_or_else(|| format!("s3://{bucket}/{key}"));
 
-    Ok(Some(ShadowAccumulationDispatch {
-        manifest_uri,
-        created,
+    Ok(Some(ShadowAccumulationManifestDispatch {
+        key,
+        manifest: build.manifest,
         focused_horizon_count: build.summary.focused.focus_horizon_count,
         focused_candidate_bundle_refs: build.summary.focused.selected_candidate_bundle_ref_count,
         deficit_lifecycle_keys,
