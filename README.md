@@ -461,14 +461,22 @@ The checkpoint separates:
 - by_symbol: per-symbol candidate and horizon status
 - by_horizon: 1h/4h/24h action counts, including market coverage extension needs
 - candidate_horizon_matrix: each candidate's 1h/4h/24h requested/replay/coverage/promotion-review state
+- materialization_schedule: latest Market-L1 as-of time, next/last pending
+  horizon due time, wait deficit, and accumulation due range
 - missing_market_replay_data_count: horizon aggregate count used to identify coverage gaps
-- next_decision: safe next actions and blocked shadow/paper/live actions
+- next_decision: safe next actions, scheduler_hint, and blocked
+  shadow/paper/live actions
 ```
 
 The batch driver writes this checkpoint automatically as
 `retest-horizon-status.json`. The summary is local-only: it does not upload S3
 outputs, start ECS tasks, switch the dispatcher, or create shadow/paper/live
 artifacts.
+`next_decision.scheduler_hint` is the machine-readable handoff for the next
+research/retest cycle. When `run_now_replay_ready` is false and
+`run_research_after_l1_as_of_ms` is set, an external scheduler should wait until
+Market-L1 has advanced to that as-of boundary before dispatching another
+focused research run.
 When the optional batch driver summary is absent, the checkpoint derives
 `stage_state.research_replay_completed` from the retest horizon plan: every
 candidate in the plan must have at least one replay-backed horizon. This keeps

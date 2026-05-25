@@ -83,6 +83,14 @@ jq \
       | reverse;
     def count_action($action):
       map(select(.next_action == $action)) | length;
+    def min_ms_for_action($action; $field):
+      [ .[] | select(.next_action == $action) | .[$field] | select(. != null) ]
+      | if length == 0 then null else min end;
+    def max_ms_for_action($action; $field):
+      [ .[] | select(.next_action == $action) | .[$field] | select(. != null) ]
+      | if length == 0 then null else max end;
+    def iso_ms($ms):
+      if $ms == null then null else (($ms / 1000) | floor | todate) end;
     def horizon_counts:
       sort_by(.horizon, .next_action)
       | group_by(.horizon)
@@ -203,6 +211,11 @@ jq \
             })
         | sort_by(.primary_symbol, .candidate_id)
       ) as $candidate_horizon_matrix
+    | ($rows | min_ms_for_action("wait_for_market_l1_horizon"; "horizon_due_ms")) as $next_wait_due_ms
+    | ($rows | max_ms_for_action("wait_for_market_l1_horizon"; "horizon_due_ms")) as $last_wait_due_ms
+    | ($rows | min_ms_for_action("accumulate_completed_native_replay_samples"; "horizon_due_ms")) as $oldest_accumulation_due_ms
+    | ($rows | max_ms_for_action("accumulate_completed_native_replay_samples"; "horizon_due_ms")) as $latest_accumulation_due_ms
+    | (.latest_l1_as_of_ms // null) as $latest_l1_as_of_ms
     | {
         schema_version:"research_horizon_status_checkpoint_v1",
         generated_at:$generated_at,
@@ -258,6 +271,23 @@ jq \
           market_l1_coverage_extension_count:($rows | count_action("extend_market_l1_horizon_coverage")),
           sample_accumulation_count:($rows | count_action("accumulate_completed_native_replay_samples")),
           promotion_ready_for_review_count:($rows | count_action("promotion_gate_ready_for_review"))
+        },
+        materialization_schedule:{
+          latest_l1_as_of_ms:$latest_l1_as_of_ms,
+          latest_l1_as_of_iso:iso_ms($latest_l1_as_of_ms),
+          next_wait_horizon_due_ms:$next_wait_due_ms,
+          next_wait_horizon_due_iso:iso_ms($next_wait_due_ms),
+          last_wait_horizon_due_ms:$last_wait_due_ms,
+          last_wait_horizon_due_iso:iso_ms($last_wait_due_ms),
+          next_wait_deficit_ms:(
+            if $latest_l1_as_of_ms == null or $next_wait_due_ms == null then null
+            else ([($next_wait_due_ms - $latest_l1_as_of_ms), 0] | max)
+            end
+          ),
+          oldest_accumulation_due_ms:$oldest_accumulation_due_ms,
+          oldest_accumulation_due_iso:iso_ms($oldest_accumulation_due_ms),
+          latest_accumulation_due_ms:$latest_accumulation_due_ms,
+          latest_accumulation_due_iso:iso_ms($latest_accumulation_due_ms)
         },
         by_symbol:(
           $rows
@@ -348,6 +378,22 @@ jq \
               then "keep_accumulating_completed_native_replay_samples"
               else empty end
           ],
+          scheduler_hint:{
+            latest_l1_as_of_ms:$latest_l1_as_of_ms,
+            latest_l1_as_of_iso:iso_ms($latest_l1_as_of_ms),
+            run_research_after_l1_as_of_ms:$next_wait_due_ms,
+            run_research_after_l1_as_of_iso:iso_ms($next_wait_due_ms),
+            wait_deficit_ms:(
+              if $latest_l1_as_of_ms == null or $next_wait_due_ms == null then null
+              else ([($next_wait_due_ms - $latest_l1_as_of_ms), 0] | max)
+              end
+            ),
+            run_now_replay_ready:(
+              (($rows | count_action("run_research_replay_for_horizon"))
+              + ($rows | count_action("materialize_completed_native_replay_sample"))) > 0
+            ),
+            promotion_ready_for_review:(($rows | count_action("promotion_gate_ready_for_review")) > 0)
+          },
           blocked_actions:[
             if (($driver.stage_state.promotion_passed // false) != true)
               then "do_not_create_shadow_without_promotion"
