@@ -26,6 +26,7 @@ pub const PORTFOLIO_ALLOCATION_SNAPSHOT_SCHEMA_VERSION: &str = "portfolio_alloca
 pub const PORTFOLIO_RISK_REJECT_EVENT_SCHEMA_VERSION: &str = "portfolio_risk_reject_event_v1";
 pub const PORTFOLIO_REDUCE_ONLY_SIGNAL_SCHEMA_VERSION: &str = "portfolio_reduce_only_signal_v1";
 pub const SHADOW_CYCLE_DECISION_SCHEMA_VERSION: &str = "research_shadow_cycle_decision_v1";
+pub const RETEST_HORIZON_PLAN_SCHEMA_VERSION: &str = "research_retest_horizon_plan_v1";
 pub const RETEST_HORIZON_STATUS_SCHEMA_VERSION: &str = "research_horizon_status_checkpoint_v1";
 pub const FOCUSED_RETEST_MANIFEST_SUMMARY_SCHEMA_VERSION: &str =
     "research_focused_retest_manifest_summary_v1";

@@ -38,10 +38,28 @@ pub fn read_research_input_manifest(path: &Path) -> AppResult<ResearchInputManif
     read_research_input_manifest_from_bytes(&path.display().to_string(), &bytes)
 }
 
+pub fn read_research_run_report(path: &Path) -> AppResult<ResearchRunReport> {
+    let bytes = fs::read(path)?;
+    read_research_run_report_from_bytes(&path.display().to_string(), &bytes)
+}
+
 pub fn read_research_input_manifest_from_bytes(
     label: &str,
     bytes: &[u8],
 ) -> AppResult<ResearchInputManifest> {
+    let text =
+        std::str::from_utf8(bytes).map_err(|error| AppError::Json(format!("{label}: {error}")))?;
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::validation(format!("{label} must not be empty")));
+    }
+    serde_json::from_str(trimmed).map_err(Into::into)
+}
+
+pub fn read_research_run_report_from_bytes(
+    label: &str,
+    bytes: &[u8],
+) -> AppResult<ResearchRunReport> {
     let text =
         std::str::from_utf8(bytes).map_err(|error| AppError::Json(format!("{label}: {error}")))?;
     let trimmed = text.trim();

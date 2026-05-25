@@ -391,10 +391,41 @@ The summary separates:
 Use the retest horizon plan after a `current_approved` batch run to decide
 whether each candidate horizon is waiting for Market-L1 coverage, ready for
 another replay run, or blocked by sample accumulation. It fetches candidate
-bundles referenced by a local `research_input_manifest_v1`, reads the local
+bundles referenced by a `research_input_manifest_v1`, reads the research-run
 report, and optionally discovers the latest Market-L1 universe as-of time. It
-does not upload reports, start ECS tasks, switch the dispatcher, or create
-shadow/paper artifacts.
+does not start ECS tasks, switch the dispatcher, or create shadow/paper
+artifacts.
+
+Prefer the app-native planner for scheduler/ECS paths:
+
+```bash
+cd /Volumes/WD/Developments/nangman-crypto/apps/research-app
+
+cargo run -- \
+  --build-retest-horizon-plan \
+  --input-manifest-file /tmp/nangman-crypto/research-input-manifest.json \
+  --research-report-file /tmp/nangman-crypto/research-output/research-run-report/schema=research_run_report_v1/dt=YYYY-MM-DD/hour=HH/research_run_report_id=<report-id>/report.json \
+  --market-l1-s3-bucket nangman-crypto-dev-market-ingest-l1-<account-suffix> \
+  --retest-horizon-plan-output-file /tmp/nangman-crypto/retest-horizon-plan.json
+```
+
+For ECS automation, read the manifest/report from S3 and write the plan under a
+non-dispatching `retest-horizon-plan/` prefix. This plan object is a checkpoint
+input for status/scheduler logic; it does not trigger research by itself:
+
+```bash
+cargo run -- \
+  --build-retest-horizon-plan \
+  --input-manifest-s3-bucket nangman-crypto-dev-research-<account-suffix> \
+  --input-manifest-s3-key retest-cycle-source/schema=research_input_manifest_v1/... \
+  --research-report-s3-bucket nangman-crypto-dev-research-<account-suffix> \
+  --research-report-s3-key research-run-report/schema=research_run_report_v1/.../report.json \
+  --market-l1-s3-bucket nangman-crypto-dev-market-ingest-l1-<account-suffix> \
+  --output-s3-bucket nangman-crypto-dev-research-<account-suffix> \
+  --output-s3-prefix retest-horizon-plan/schema=research_retest_horizon_plan_v1
+```
+
+The legacy shell planner remains useful for local diagnosis:
 
 ```bash
 cd /Volumes/WD/Developments/nangman-crypto/apps/research-app
