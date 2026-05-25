@@ -12,6 +12,9 @@ async fn main() {
                 retest_horizon_statuses_validated: 0,
                 retest_cycle_scheduler_action: None,
                 retest_cycle_run_not_before_ms: None,
+                focused_retest_manifests_created: 0,
+                focused_retest_horizon_count: 0,
+                focused_retest_candidate_bundle_refs: 0,
                 shadow_cycle_decisions_validated: 0,
                 shadow_cycle_decisions_created: 0,
                 shadow_cycle_scheduler_action: None,
@@ -39,6 +42,7 @@ async fn main() {
         Ok(summary) => {
             if summary.processed_bundles > 0
                 || summary.retest_horizon_statuses_validated > 0
+                || summary.focused_retest_manifests_created > 0
                 || summary.shadow_cycle_decisions_validated > 0
                 || summary.shadow_cycle_decisions_created > 0
             {

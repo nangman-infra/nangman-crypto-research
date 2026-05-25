@@ -12,6 +12,7 @@ use crate::model::{
     ReplayRun, ReplayRunIndexRecord, ResearchInputManifest, ShadowCycleDecision,
     ShadowValidationRun,
 };
+use crate::retest_cycle::read_retest_horizon_status_from_bytes;
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::Client;
 use aws_sdk_s3::config::Builder as S3ConfigBuilder;
@@ -37,6 +38,15 @@ pub async fn read_research_input_manifest_from_s3(
     let client = s3_client().await?;
     let bytes = get_object_bytes(&client, bucket, key).await?;
     read_research_input_manifest_from_bytes(&format!("s3://{bucket}/{key}"), bytes.as_ref())
+}
+
+pub async fn read_retest_horizon_status_from_s3(
+    bucket: &str,
+    key: &str,
+) -> AppResult<serde_json::Value> {
+    let client = s3_client().await?;
+    let bytes = get_object_bytes(&client, bucket, key).await?;
+    read_retest_horizon_status_from_bytes(&format!("s3://{bucket}/{key}"), bytes.as_ref())
 }
 
 pub async fn read_market_feature_deltas_from_s3(
@@ -437,6 +447,47 @@ pub async fn write_shadow_cycle_decision_to_s3(
         decision.schema_version, dt.date, dt.hour, decision.decision_id
     );
     put_object_json(&client, bucket, &key, decision).await?;
+    Ok(format!("s3://{bucket}/{key}"))
+}
+
+pub async fn write_research_input_manifest_to_s3(
+    bucket: &str,
+    prefix: &str,
+    manifest: &ResearchInputManifest,
+    output_partition_at_ms: i64,
+) -> AppResult<String> {
+    if bucket.trim().is_empty() {
+        return Err(AppError::config(
+            "research input manifest output S3 bucket must not be empty",
+        ));
+    }
+    let packet_id = manifest
+        .research_packet_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            AppError::validation(
+                "research input manifest requires research_packet_id for S3 output",
+            )
+        })?;
+    let client = s3_client().await?;
+    let dt = partition(output_partition_at_ms)?;
+    let prefix = normalize_prefix(if prefix.trim().is_empty() {
+        "research-input-manifest/schema=research_input_manifest_v1"
+    } else {
+        prefix
+    });
+    if !prefix.starts_with("research-input-manifest/") {
+        return Err(AppError::config(
+            "focused retest manifest S3 prefix must start with research-input-manifest/",
+        ));
+    }
+    let key = format!(
+        "{prefix}dt={}/hour={:02}/research_packet_id={packet_id}/manifest.json",
+        dt.date, dt.hour
+    );
+    put_object_json(&client, bucket, &key, manifest).await?;
     Ok(format!("s3://{bucket}/{key}"))
 }
 

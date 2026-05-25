@@ -325,6 +325,48 @@ pub fn write_shadow_cycle_decision(
     Ok(output_file.to_path_buf())
 }
 
+pub fn write_research_input_manifest(
+    output_file: &Path,
+    manifest: &ResearchInputManifest,
+) -> AppResult<PathBuf> {
+    if !output_file.is_absolute() {
+        return Err(AppError::config(
+            "research input manifest output file must be an absolute path",
+        ));
+    }
+    let parent = output_file.parent().ok_or_else(|| {
+        AppError::validation(format!(
+            "research input manifest output path has no parent: {}",
+            output_file.display()
+        ))
+    })?;
+    fs::create_dir_all(parent)?;
+    let mut file = File::create(output_file)?;
+    serde_json::to_writer_pretty(&mut file, manifest)?;
+    file.write_all(b"\n")?;
+    Ok(output_file.to_path_buf())
+}
+
+pub fn write_pretty_json_file<T>(output_file: &Path, value: &T) -> AppResult<PathBuf>
+where
+    T: Serialize,
+{
+    if !output_file.is_absolute() {
+        return Err(AppError::config("output file must be an absolute path"));
+    }
+    let parent = output_file.parent().ok_or_else(|| {
+        AppError::validation(format!(
+            "output file path has no parent: {}",
+            output_file.display()
+        ))
+    })?;
+    fs::create_dir_all(parent)?;
+    let mut file = File::create(output_file)?;
+    serde_json::to_writer_pretty(&mut file, value)?;
+    file.write_all(b"\n")?;
+    Ok(output_file.to_path_buf())
+}
+
 pub fn write_shadow_cycle_decision_to_dir(
     output_dir: &Path,
     decision: &ShadowCycleDecision,

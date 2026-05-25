@@ -18,8 +18,17 @@ pub fn read_retest_horizon_status(path: &Path) -> AppResult<Value> {
         ));
     }
     let raw = fs::read_to_string(path)?;
-    let status = serde_json::from_str(&raw)?;
-    Ok(status)
+    read_retest_horizon_status_from_bytes(&path.display().to_string(), raw.as_bytes())
+}
+
+pub fn read_retest_horizon_status_from_bytes(label: &str, bytes: &[u8]) -> AppResult<Value> {
+    let text =
+        std::str::from_utf8(bytes).map_err(|error| AppError::Json(format!("{label}: {error}")))?;
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::validation(format!("{label} must not be empty")));
+    }
+    Ok(serde_json::from_str(trimmed)?)
 }
 
 pub fn validate_retest_horizon_status(status: &Value) -> AppResult<RetestHorizonStatusValidation> {

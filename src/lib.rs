@@ -4,6 +4,7 @@ pub mod admission;
 pub mod artifacts;
 pub mod cli;
 pub mod error;
+pub mod focused_retest;
 pub mod gate;
 pub mod hash;
 pub mod holding;

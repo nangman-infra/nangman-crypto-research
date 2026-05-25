@@ -844,6 +844,33 @@ If no horizons match the requested actions, it writes an empty manifest and
 summary, reports `selected_candidate_bundle_ref_count=0`, and exits non-zero so
 operators do not accidentally treat an empty focused run as replay evidence.
 
+The same focused manifest builder is available inside `research-app`, which is
+the scheduler-friendly path because it removes the local shell/JQ dependency:
+
+```bash
+cargo run -- \
+  --build-focused-retest-manifest \
+  --retest-horizon-status-file /tmp/nangman-crypto/research-current-approved-batch/<run-id>/retest-horizon-status.json \
+  --input-manifest-file /tmp/nangman-crypto/research-current-approved-batch/<run-id>/research-input-manifest.json \
+  --focused-retest-manifest-output-file /tmp/nangman-crypto/research-focus/input-manifest.json
+```
+
+For runtime automation, a scheduler can run the same mode with S3 input and S3
+manifest output. Writing under `research-input-manifest/` wakes the existing
+S3 notification -> Lambda -> ECS research path; the builder itself still does
+not run research, switch the dispatcher, or create shadow/paper/live artifacts:
+
+```bash
+cargo run -- \
+  --build-focused-retest-manifest \
+  --retest-horizon-status-s3-bucket nangman-crypto-dev-research-<account-suffix> \
+  --retest-horizon-status-s3-key retest-horizon-status/schema=research_horizon_status_checkpoint_v1/... \
+  --input-manifest-s3-bucket nangman-crypto-dev-research-<account-suffix> \
+  --input-manifest-s3-key research-input-manifest/schema=research_input_manifest_v1/... \
+  --output-s3-bucket nangman-crypto-dev-research-<account-suffix> \
+  --output-s3-prefix research-input-manifest/schema=research_input_manifest_v1
+```
+
 ## Source-Gap Evidence Manifest
 
 Use the source-gap evidence manifest when candidate coverage diagnosis shows an

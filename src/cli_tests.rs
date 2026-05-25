@@ -39,10 +39,18 @@ fn output_file_containing(summary: &RunSummary, needle: &str) -> PathBuf {
 fn default_args() -> Args {
     Args {
         build_shadow_cycle_decision: false,
+        build_focused_retest_manifest: false,
         shadow_cycle_decision_file: None,
         shadow_cycle_decision_output_file: None,
         shadow_cycle_latest_l1_as_of_ms: None,
         retest_horizon_status_file: None,
+        retest_horizon_status_s3_bucket: None,
+        retest_horizon_status_s3_key: None,
+        focused_retest_manifest_output_file: None,
+        focused_retest_summary_output_file: None,
+        focused_retest_next_actions: crate::focused_retest::default_focused_retest_actions(),
+        focused_retest_historical_replay_index_ref_mode:
+            crate::focused_retest::HistoricalReplayIndexRefMode::Auto,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
         input_manifest_s3_key: None,
@@ -385,6 +393,79 @@ fn retest_horizon_wait_status_json() -> Value {
                 "do_not_create_paper_without_passed_shadow",
                 "do_not_enable_live_from_research_batch"
             ]
+        }
+    })
+}
+
+fn focused_retest_status_json() -> Value {
+    let mut status = retest_horizon_wait_status_json();
+    status["by_symbol"] = json!([
+        {
+            "symbol": "AAVE",
+            "candidates": [
+                {
+                    "candidate_id": "cand_focus",
+                    "candidate_lifecycle_key": "cand_focus:v1",
+                    "hypothesis_type": "event_reaction",
+                    "research_priority": "p0",
+                    "horizons": [
+                        {
+                            "horizon": "1h",
+                            "next_action": "accumulate_completed_native_replay_samples",
+                            "symbols": ["AAVE"],
+                            "replay_run_count": 2,
+                            "completed_count": 1,
+                            "completed_sample_deficit": 2,
+                            "reason_codes": ["sample_deficit"]
+                        }
+                    ]
+                },
+                {
+                    "candidate_id": "cand_wait",
+                    "candidate_lifecycle_key": "cand_wait:v1",
+                    "hypothesis_type": "event_reaction",
+                    "research_priority": "p0",
+                    "horizons": [
+                        {
+                            "horizon": "4h",
+                            "next_action": "wait_for_market_l1_horizon",
+                            "symbols": ["AAVE"],
+                            "reason_codes": ["waiting_for_l1"]
+                        }
+                    ]
+                }
+            ]
+        }
+    ]);
+    status
+}
+
+fn focused_retest_source_manifest_json() -> Value {
+    json!({
+        "schema_version": "research_input_manifest_v1",
+        "research_packet_id": "source_packet",
+        "run_scope": "current_approved",
+        "candidate_bundle_refs": [
+            {
+                "uri": "s3://bucket/candidate-evidence-bundle/priority=p0/candidate_id=cand_focus/part-000001.jsonl"
+            },
+            {
+                "uri": "s3://bucket/candidate-evidence-bundle/priority=p0/candidate_id=cand_wait/part-000001.jsonl"
+            }
+        ],
+        "historical_replay_run_index_refs": [
+            {
+                "uri": "s3://research/replay-run-index/part-000001.jsonl"
+            }
+        ],
+        "runtime_budget_policy": {
+            "max_candidate_bundle_count": 10,
+            "max_market_artifact_ref_count": 20,
+            "max_shadow_validation_run_ref_count": 20,
+            "max_hypothesis_harness_result_ref_count": 20,
+            "max_oss_adapter_run_ref_count": 20,
+            "max_historical_replay_run_ref_count": 20,
+            "max_replay_run_count": 100
         }
     })
 }
@@ -835,6 +916,123 @@ async fn retest_horizon_status_file_rejects_live_enabled() {
         .expect_err("unsafe retest status is rejected");
 
     assert!(error.to_string().contains("live trading"));
+}
+
+#[tokio::test]
+async fn build_focused_retest_manifest_from_status_and_source_manifest() {
+    let root = test_root("focused-retest-manifest-cli");
+    let status_file = root.join("retest-horizon-status.json");
+    let source_manifest_file = root.join("research-input-manifest.json");
+    let output_file = root.join("focused-retest-manifest.json");
+    let summary_file = root.join("focused-retest-manifest.summary.json");
+    write_json(&status_file, &focused_retest_status_json());
+    write_json(
+        &source_manifest_file,
+        &focused_retest_source_manifest_json(),
+    );
+
+    let args = parse_args(
+        [
+            "--build-focused-retest-manifest".to_owned(),
+            "--retest-horizon-status-file".to_owned(),
+            status_file.display().to_string(),
+            "--input-manifest-file".to_owned(),
+            source_manifest_file.display().to_string(),
+            "--focused-retest-manifest-output-file".to_owned(),
+            output_file.display().to_string(),
+            "--focused-retest-summary-output-file".to_owned(),
+            summary_file.display().to_string(),
+            "--research-packet-id".to_owned(),
+            "research_focus_test".to_owned(),
+            "--run-scope".to_owned(),
+            "focused_retest_local_validation".to_owned(),
+            "--now-ms".to_owned(),
+            "1779719361452".to_owned(),
+        ]
+        .into_iter(),
+    )
+    .expect("focused args parse")
+    .expect("focused args returned");
+    let summary = run(args).await.expect("focused manifest builds");
+
+    assert_eq!(summary.retest_horizon_statuses_validated, 1);
+    assert_eq!(summary.focused_retest_manifests_created, 1);
+    assert_eq!(summary.focused_retest_horizon_count, 1);
+    assert_eq!(summary.focused_retest_candidate_bundle_refs, 1);
+    assert_eq!(summary.output_files.len(), 2);
+
+    let manifest: Value =
+        serde_json::from_slice(&fs::read(&output_file).expect("manifest")).expect("manifest json");
+    assert_eq!(manifest["research_packet_id"], json!("research_focus_test"));
+    assert_eq!(
+        manifest["candidate_bundle_refs"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(
+        manifest["candidate_bundle_refs"][0]["uri"],
+        json!(
+            "s3://bucket/candidate-evidence-bundle/priority=p0/candidate_id=cand_focus/part-000001.jsonl"
+        )
+    );
+    assert_eq!(
+        manifest["historical_replay_run_index_refs"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let focus_summary: Value =
+        serde_json::from_slice(&fs::read(&summary_file).expect("summary")).expect("summary json");
+    assert_eq!(
+        focus_summary["schema_version"],
+        json!("research_focused_retest_manifest_summary_v1")
+    );
+    assert_eq!(
+        focus_summary["focused"]["selected_candidate_bundle_ref_count"],
+        json!(1)
+    );
+    assert_eq!(focus_summary["safety"]["s3_write"], json!(false));
+}
+
+#[tokio::test]
+async fn build_focused_retest_manifest_rejects_empty_selection() {
+    let root = test_root("focused-retest-empty-cli");
+    let status_file = root.join("retest-horizon-status.json");
+    let source_manifest_file = root.join("research-input-manifest.json");
+    let output_file = root.join("focused-retest-manifest.json");
+    write_json(&status_file, &focused_retest_status_json());
+    write_json(
+        &source_manifest_file,
+        &focused_retest_source_manifest_json(),
+    );
+
+    let args = parse_args(
+        [
+            "--build-focused-retest-manifest".to_owned(),
+            "--retest-horizon-status-file".to_owned(),
+            status_file.display().to_string(),
+            "--input-manifest-file".to_owned(),
+            source_manifest_file.display().to_string(),
+            "--focused-retest-manifest-output-file".to_owned(),
+            output_file.display().to_string(),
+            "--focused-retest-next-actions".to_owned(),
+            "run_research_replay_for_horizon".to_owned(),
+        ]
+        .into_iter(),
+    )
+    .expect("focused args parse")
+    .expect("focused args returned");
+    let error = run(args)
+        .await
+        .expect_err("empty focused selection is rejected");
+
+    assert!(
+        error
+            .to_string()
+            .contains("selected zero candidate bundle refs")
+    );
+    assert!(!output_file.exists());
 }
 
 #[tokio::test]
