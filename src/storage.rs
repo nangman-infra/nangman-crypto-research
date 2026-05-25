@@ -9,7 +9,8 @@ use crate::io::{
 };
 use crate::model::{
     IntelCandidateEvidenceBundle, MarketFeatureDelta, MarketRegimeContext, OssAdapterRun,
-    ReplayRun, ReplayRunIndexRecord, ResearchInputManifest, ResearchRunReport, ShadowCycleDecision,
+    RETEST_CYCLE_SOURCE_STATE_SCHEMA_VERSION, ReplayRun, ReplayRunIndexRecord,
+    ResearchInputManifest, ResearchRunReport, RetestCycleSourceState, ShadowCycleDecision,
     ShadowValidationRun,
 };
 use crate::retest_cycle::read_retest_horizon_status_from_bytes;
@@ -48,6 +49,43 @@ pub async fn read_research_run_report_from_s3(
     let client = s3_client().await?;
     let bytes = get_object_bytes(&client, bucket, key).await?;
     read_research_run_report_from_bytes(&format!("s3://{bucket}/{key}"), bytes.as_ref())
+}
+
+pub async fn read_latest_retest_cycle_source_state_from_s3(
+    bucket: &str,
+    prefix: &str,
+) -> AppResult<RetestCycleSourceState> {
+    if bucket.trim().is_empty() {
+        return Err(AppError::config(
+            "retest cycle source state S3 bucket must not be empty",
+        ));
+    }
+    let client = s3_client().await?;
+    let prefix = normalize_prefix(if prefix.trim().is_empty() {
+        "retest-cycle-source-state/schema=research_retest_cycle_source_state_v1"
+    } else {
+        prefix
+    });
+    if !prefix.starts_with("retest-cycle-source-state/") {
+        return Err(AppError::config(
+            "retest cycle source state S3 prefix must start with retest-cycle-source-state/",
+        ));
+    }
+    let keys = list_payload_objects_with_prefix(&client, bucket, &prefix, "/state.json", 1_000)
+        .await
+        .map(|objects| select_latest_payload_keys(objects, 1))?;
+    let key = keys
+        .first()
+        .ok_or_else(|| AppError::AwsNotFound(format!("s3://{bucket}/{prefix}")))?;
+    let bytes = get_object_bytes(&client, bucket, key).await?;
+    let state = serde_json::from_slice::<RetestCycleSourceState>(&bytes)?;
+    if state.schema_version != RETEST_CYCLE_SOURCE_STATE_SCHEMA_VERSION {
+        return Err(AppError::validation(format!(
+            "retest cycle source state schema_version must be {RETEST_CYCLE_SOURCE_STATE_SCHEMA_VERSION}; got {}",
+            state.schema_version
+        )));
+    }
+    Ok(state)
 }
 
 pub async fn read_retest_horizon_status_from_s3(
@@ -581,6 +619,37 @@ pub async fn write_research_input_manifest_to_exact_s3_key_if_absent(
         PutIfAbsentResult::Created => Ok(Some(format!("s3://{bucket}/{key}"))),
         PutIfAbsentResult::AlreadyExists => Ok(None),
     }
+}
+
+pub async fn write_retest_cycle_source_state_to_s3(
+    bucket: &str,
+    prefix: &str,
+    state: &RetestCycleSourceState,
+    output_partition_at_ms: i64,
+) -> AppResult<String> {
+    if bucket.trim().is_empty() {
+        return Err(AppError::config(
+            "retest cycle source state output S3 bucket must not be empty",
+        ));
+    }
+    let client = s3_client().await?;
+    let dt = partition(output_partition_at_ms)?;
+    let prefix = normalize_prefix(if prefix.trim().is_empty() {
+        "retest-cycle-source-state/schema=research_retest_cycle_source_state_v1"
+    } else {
+        prefix
+    });
+    if !prefix.starts_with("retest-cycle-source-state/") {
+        return Err(AppError::config(
+            "retest cycle source state S3 prefix must start with retest-cycle-source-state/",
+        ));
+    }
+    let key = format!(
+        "{prefix}dt={}/hour={:02}/research_packet_id={}/research_run_report_id={}/state.json",
+        dt.date, dt.hour, state.research_packet_id, state.source_research_report_id
+    );
+    put_object_json(&client, bucket, &key, state).await?;
+    Ok(format!("s3://{bucket}/{key}"))
 }
 
 pub async fn write_retest_horizon_plan_to_s3(

@@ -28,6 +28,7 @@ pub const PORTFOLIO_REDUCE_ONLY_SIGNAL_SCHEMA_VERSION: &str = "portfolio_reduce_
 pub const SHADOW_CYCLE_DECISION_SCHEMA_VERSION: &str = "research_shadow_cycle_decision_v1";
 pub const RETEST_HORIZON_PLAN_SCHEMA_VERSION: &str = "research_retest_horizon_plan_v1";
 pub const RETEST_HORIZON_STATUS_SCHEMA_VERSION: &str = "research_horizon_status_checkpoint_v1";
+pub const RETEST_CYCLE_SOURCE_STATE_SCHEMA_VERSION: &str = "research_retest_cycle_source_state_v1";
 pub const FOCUSED_RETEST_MANIFEST_SUMMARY_SCHEMA_VERSION: &str =
     "research_focused_retest_manifest_summary_v1";
 pub const HOLDING_POLICY_VERSION: &str = "crypto_intraday_holding_policy_v1_2026_05_12";
@@ -64,6 +65,33 @@ pub struct ResearchInputManifest {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct ResearchArtifactRef {
     pub uri: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct RetestCycleSourceState {
+    pub schema_version: String,
+    pub generated_at_ms: i64,
+    pub research_packet_id: String,
+    pub run_scope: String,
+    pub source_manifest_s3_bucket: String,
+    pub source_manifest_s3_key: String,
+    pub source_research_report_s3_bucket: String,
+    pub source_research_report_s3_key: String,
+    pub source_research_report_id: String,
+    pub source_candidate_ids: Vec<String>,
+    pub replay_run_id_count: usize,
+    pub summary_findings_count: usize,
+    pub shadow_validation_run_count: usize,
+    pub paper_trade_candidate_count: usize,
+    pub safety: RetestCycleSourceStateSafety,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct RetestCycleSourceStateSafety {
+    pub dispatcher_prefix: String,
+    pub state_s3_write: bool,
+    pub ecs_task_started: bool,
+    pub shadow_paper_live_enabled: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]

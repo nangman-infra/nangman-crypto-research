@@ -15,8 +15,9 @@ use crate::io::{
 use crate::model::{
     IntelCandidateEvidenceBundle, MarketFeatureDelta, MarketRegimeContext,
     OSS_ADAPTER_RUN_SCHEMA_VERSION, OssAdapterRun, RESEARCH_INPUT_MANIFEST_SCHEMA_VERSION,
-    ReplayRun, ReplayRunIndexRecord, ResearchArtifactRef, ResearchInputManifest,
-    ResearchRuntimeBudgetPolicy, SelectedMarketArtifactTrace, ShadowCycleSchedulerAction,
+    RETEST_CYCLE_SOURCE_STATE_SCHEMA_VERSION, ReplayRun, ReplayRunIndexRecord, ResearchArtifactRef,
+    ResearchInputManifest, ResearchRuntimeBudgetPolicy, RetestCycleSourceState,
+    RetestCycleSourceStateSafety, SelectedMarketArtifactTrace, ShadowCycleSchedulerAction,
     ShadowValidationRun,
 };
 use crate::paper::build_paper_artifacts;
@@ -35,14 +36,15 @@ use crate::storage::{
     discover_latest_market_regime_context_keys_from_s3,
     discover_latest_symbol_universe_snapshot_end_ms_from_s3,
     discover_replay_run_index_keys_from_s3, read_candidate_bundles_from_s3,
-    read_market_feature_deltas_from_s3, read_market_regime_contexts_from_s3,
-    read_oss_adapter_runs_from_s3, read_replay_run_index_records_from_s3, read_replay_runs_from_s3,
+    read_latest_retest_cycle_source_state_from_s3, read_market_feature_deltas_from_s3,
+    read_market_regime_contexts_from_s3, read_oss_adapter_runs_from_s3,
+    read_replay_run_index_records_from_s3, read_replay_runs_from_s3,
     read_research_input_manifest_from_s3, read_research_run_report_from_s3,
     read_retest_horizon_plan_from_s3, read_retest_horizon_status_from_s3,
     read_shadow_validation_runs_from_s3, write_research_input_manifest_to_exact_s3_key_if_absent,
     write_research_input_manifest_to_s3, write_research_outputs_to_s3,
-    write_retest_horizon_plan_to_s3, write_retest_horizon_status_to_s3,
-    write_shadow_cycle_decision_to_s3,
+    write_retest_cycle_source_state_to_s3, write_retest_horizon_plan_to_s3,
+    write_retest_horizon_status_to_s3, write_shadow_cycle_decision_to_s3,
 };
 use crate::time::now_ms;
 use serde::Serialize;
@@ -64,6 +66,7 @@ pub struct Args {
     pub build_shadow_cycle_decision: bool,
     pub build_retest_horizon_plan: bool,
     pub run_retest_refresh_cycle: bool,
+    pub run_retest_refresh_cycle_from_latest_state: bool,
     pub run_retest_cycle_scheduler: bool,
     pub build_retest_horizon_status: bool,
     pub build_focused_retest_manifest: bool,
@@ -184,6 +187,9 @@ where
         build_shadow_cycle_decision: env_bool("RESEARCH_BUILD_SHADOW_CYCLE_DECISION"),
         build_retest_horizon_plan: env_bool("RESEARCH_BUILD_RETEST_HORIZON_PLAN"),
         run_retest_refresh_cycle: env_bool("RESEARCH_RUN_RETEST_REFRESH_CYCLE"),
+        run_retest_refresh_cycle_from_latest_state: env_bool(
+            "RESEARCH_RUN_RETEST_REFRESH_CYCLE_FROM_LATEST_STATE",
+        ),
         run_retest_cycle_scheduler: env_bool("RESEARCH_RUN_RETEST_CYCLE_SCHEDULER"),
         build_retest_horizon_status: env_bool("RESEARCH_BUILD_RETEST_HORIZON_STATUS"),
         build_focused_retest_manifest: env_bool("RESEARCH_BUILD_FOCUSED_RETEST_MANIFEST"),
@@ -260,6 +266,9 @@ where
             }
             "--run-retest-refresh-cycle" => {
                 args.run_retest_refresh_cycle = true;
+            }
+            "--run-retest-refresh-cycle-from-latest-state" => {
+                args.run_retest_refresh_cycle_from_latest_state = true;
             }
             "--run-retest-cycle-scheduler" => {
                 args.run_retest_cycle_scheduler = true;
@@ -603,6 +612,7 @@ where
     if args.build_retest_horizon_plan
         && (args.build_retest_horizon_status
             || args.run_retest_refresh_cycle
+            || args.run_retest_refresh_cycle_from_latest_state
             || args.run_retest_cycle_scheduler
             || args.build_focused_retest_manifest)
     {
@@ -612,6 +622,7 @@ where
     }
     if args.run_retest_refresh_cycle
         && (args.build_retest_horizon_status
+            || args.run_retest_refresh_cycle_from_latest_state
             || args.run_retest_cycle_scheduler
             || args.build_focused_retest_manifest)
     {
@@ -619,8 +630,17 @@ where
             "use --run-retest-refresh-cycle separately from retest status, scheduler, or focused manifest modes",
         ));
     }
-    if args.build_retest_horizon_status
+    if args.run_retest_refresh_cycle_from_latest_state
         && (args.run_retest_cycle_scheduler || args.build_focused_retest_manifest)
+    {
+        return Err(AppError::config(
+            "use --run-retest-refresh-cycle-from-latest-state separately from retest scheduler or focused manifest modes",
+        ));
+    }
+    if args.build_retest_horizon_status
+        && (args.run_retest_refresh_cycle_from_latest_state
+            || args.run_retest_cycle_scheduler
+            || args.build_focused_retest_manifest)
     {
         return Err(AppError::config(
             "use --build-retest-horizon-status separately from retest scheduler or focused manifest modes",
@@ -642,6 +662,10 @@ where
     }
     if args.run_retest_refresh_cycle {
         validate_retest_refresh_cycle_args(&args)?;
+        return Ok(Some(args));
+    }
+    if args.run_retest_refresh_cycle_from_latest_state {
+        validate_retest_refresh_cycle_from_latest_state_args(&args)?;
         return Ok(Some(args));
     }
     if args.build_retest_horizon_status {
@@ -743,6 +767,9 @@ where
 pub async fn run(args: Args) -> AppResult<RunSummary> {
     if args.run_retest_refresh_cycle {
         return run_retest_refresh_cycle_mode(&args).await;
+    }
+    if args.run_retest_refresh_cycle_from_latest_state {
+        return run_retest_refresh_cycle_from_latest_state_mode(&args).await;
     }
     if args.build_retest_horizon_plan {
         return build_retest_horizon_plan_mode(&args).await;
@@ -936,7 +963,7 @@ pub async fn run(args: Args) -> AppResult<RunSummary> {
         paper_trade_marks: &paper_artifacts.marks,
         output_partition_at_ms,
     };
-    let output_files = if let Some(output_dir) = args.output_dir.as_deref() {
+    let mut output_files = if let Some(output_dir) = args.output_dir.as_deref() {
         write_research_outputs(output_dir, &output_artifacts)?
             .into_iter()
             .map(|path| path.display().to_string())
@@ -952,6 +979,15 @@ pub async fn run(args: Args) -> AppResult<RunSummary> {
         println!("{}", serde_json::to_string_pretty(&report)?);
         Vec::new()
     };
+    output_files.extend(
+        write_retest_cycle_source_state_output(
+            &args,
+            &report,
+            &output_files,
+            output_partition_at_ms,
+        )
+        .await?,
+    );
 
     Ok(RunSummary {
         retest_horizon_plans_created: 0,
@@ -980,6 +1016,96 @@ pub async fn run(args: Args) -> AppResult<RunSummary> {
         portfolio_reduce_only_signals_created: report.portfolio_reduce_only_signals.len(),
         output_files,
     })
+}
+
+async fn write_retest_cycle_source_state_output(
+    args: &Args,
+    report: &crate::model::ResearchRunReport,
+    output_files: &[String],
+    output_partition_at_ms: i64,
+) -> AppResult<Vec<String>> {
+    let Some(output_bucket) = args.output_s3_bucket.as_deref() else {
+        return Ok(Vec::new());
+    };
+    let (Some(source_manifest_s3_bucket), Some(source_manifest_s3_key)) = (
+        args.input_manifest_s3_bucket.as_deref(),
+        args.input_manifest_s3_key.as_deref(),
+    ) else {
+        return Ok(Vec::new());
+    };
+    let source_research_report_s3_key = research_report_s3_key_from_output_files(
+        output_bucket,
+        output_files,
+        &report.research_run_report_id,
+    )?;
+    let state = build_retest_cycle_source_state(
+        output_partition_at_ms,
+        source_manifest_s3_bucket,
+        source_manifest_s3_key,
+        output_bucket,
+        &source_research_report_s3_key,
+        report,
+    );
+    write_retest_cycle_source_state_to_s3(output_bucket, "", &state, output_partition_at_ms)
+        .await
+        .map(|uri| vec![uri])
+}
+
+fn build_retest_cycle_source_state(
+    generated_at_ms: i64,
+    source_manifest_s3_bucket: &str,
+    source_manifest_s3_key: &str,
+    source_research_report_s3_bucket: &str,
+    source_research_report_s3_key: &str,
+    report: &crate::model::ResearchRunReport,
+) -> RetestCycleSourceState {
+    RetestCycleSourceState {
+        schema_version: RETEST_CYCLE_SOURCE_STATE_SCHEMA_VERSION.to_owned(),
+        generated_at_ms,
+        research_packet_id: report.research_packet_id.clone(),
+        run_scope: report.run_scope.clone(),
+        source_manifest_s3_bucket: source_manifest_s3_bucket.to_owned(),
+        source_manifest_s3_key: source_manifest_s3_key.to_owned(),
+        source_research_report_s3_bucket: source_research_report_s3_bucket.to_owned(),
+        source_research_report_s3_key: source_research_report_s3_key.to_owned(),
+        source_research_report_id: report.research_run_report_id.clone(),
+        source_candidate_ids: report.source_candidate_ids.clone(),
+        replay_run_id_count: report.replay_run_ids.len(),
+        summary_findings_count: report.summary_findings.len(),
+        shadow_validation_run_count: report.shadow_validation_runs.len(),
+        paper_trade_candidate_count: report.paper_trade_candidates.len(),
+        safety: RetestCycleSourceStateSafety {
+            dispatcher_prefix: "research-input-manifest/".to_owned(),
+            state_s3_write: true,
+            ecs_task_started: false,
+            shadow_paper_live_enabled: false,
+        },
+    }
+}
+
+fn research_report_s3_key_from_output_files(
+    bucket: &str,
+    output_files: &[String],
+    research_run_report_id: &str,
+) -> AppResult<String> {
+    let uri_prefix = format!("s3://{bucket}/");
+    let report_path = format!("research_run_report_id={research_run_report_id}/report.json");
+    output_files
+        .iter()
+        .find_map(|file| {
+            file.strip_prefix(&uri_prefix)
+                .filter(|key| {
+                    key.starts_with("research-run-report/")
+                        || key.contains("/research-run-report/")
+                })
+                .filter(|key| key.ends_with(&report_path))
+                .map(ToOwned::to_owned)
+        })
+        .ok_or_else(|| {
+            AppError::validation(format!(
+                "research output files missing S3 report for research_run_report_id={research_run_report_id}"
+            ))
+        })
 }
 
 async fn build_shadow_cycle_decision_mode(args: &Args) -> AppResult<RunSummary> {
@@ -1199,6 +1325,25 @@ async fn run_retest_refresh_cycle_mode(args: &Args) -> AppResult<RunSummary> {
         portfolio_reduce_only_signals_created: 0,
         output_files,
     })
+}
+
+async fn run_retest_refresh_cycle_from_latest_state_mode(args: &Args) -> AppResult<RunSummary> {
+    let Some(bucket) = args.output_s3_bucket.as_deref() else {
+        return Err(AppError::config(
+            "--run-retest-refresh-cycle-from-latest-state requires --output-s3-bucket",
+        ));
+    };
+    let state = read_latest_retest_cycle_source_state_from_s3(bucket, "").await?;
+    let mut derived_args = args.clone();
+    derived_args.run_retest_refresh_cycle_from_latest_state = false;
+    derived_args.run_retest_refresh_cycle = true;
+    derived_args.input_manifest_file = None;
+    derived_args.input_manifest_s3_bucket = Some(state.source_manifest_s3_bucket);
+    derived_args.input_manifest_s3_key = Some(state.source_manifest_s3_key);
+    derived_args.research_report_file = None;
+    derived_args.research_report_s3_bucket = Some(state.source_research_report_s3_bucket);
+    derived_args.research_report_s3_key = Some(state.source_research_report_s3_key);
+    run_retest_refresh_cycle_mode(&derived_args).await
 }
 
 async fn build_retest_horizon_status_mode(args: &Args) -> AppResult<RunSummary> {
@@ -2888,6 +3033,56 @@ fn validate_retest_refresh_cycle_args(args: &Args) -> AppResult<()> {
     Ok(())
 }
 
+fn validate_retest_refresh_cycle_from_latest_state_args(args: &Args) -> AppResult<()> {
+    if args.output_dir.is_some() {
+        return Err(AppError::config(
+            "--run-retest-refresh-cycle-from-latest-state uses --output-s3-bucket, not --output-dir",
+        ));
+    }
+    if args.output_s3_bucket.is_none() {
+        return Err(AppError::config(
+            "--run-retest-refresh-cycle-from-latest-state requires --output-s3-bucket",
+        ));
+    }
+    if args.market_l1_s3_bucket.is_none() && args.retest_horizon_latest_l1_as_of_ms.is_none() {
+        return Err(AppError::config(
+            "--run-retest-refresh-cycle-from-latest-state requires --market-l1-s3-bucket or --retest-horizon-latest-l1-as-of-ms",
+        ));
+    }
+    if args.input_manifest_file.is_some()
+        || args.input_manifest_s3_bucket.is_some()
+        || args.input_manifest_s3_key.is_some()
+        || args.research_report_file.is_some()
+        || args.research_report_s3_bucket.is_some()
+        || args.research_report_s3_key.is_some()
+    {
+        return Err(AppError::config(
+            "--run-retest-refresh-cycle-from-latest-state discovers manifest/report inputs from retest-cycle-source-state; do not pass manifest/report inputs",
+        ));
+    }
+    if has_retest_horizon_plan_input(args) || has_retest_horizon_status_input(args) {
+        return Err(AppError::config(
+            "--run-retest-refresh-cycle-from-latest-state creates fresh plan/status; do not pass retest horizon plan/status inputs",
+        ));
+    }
+    if has_retest_refresh_individual_output(args) {
+        return Err(AppError::config(
+            "--run-retest-refresh-cycle-from-latest-state uses --output-s3-bucket, not individual retest/focus output files",
+        ));
+    }
+    if args.output_s3_prefix.is_some() {
+        return Err(AppError::config(
+            "--run-retest-refresh-cycle-from-latest-state writes multiple artifact families; do not pass --output-s3-prefix",
+        ));
+    }
+    if args.focused_retest_next_actions.is_empty() {
+        return Err(AppError::config(
+            "focused retest next action list must not be empty",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_retest_refresh_manifest_input(args: &Args) -> AppResult<()> {
     match (
         args.input_manifest_file.is_some(),
@@ -3174,6 +3369,13 @@ research_input_manifest_v1 under the existing dispatcher prefix:
   --research-report-s3-key research-run-report/schema=research_run_report_v1/.../report.json
   --market-l1-s3-bucket nangman-crypto-dev-market-ingest-l1-<account-suffix>
   --output-s3-bucket nangman-crypto-dev-research-<account-suffix>
+
+Retest refresh can also discover its manifest/report pair from the latest
+retest-cycle-source-state checkpoint, which is the scheduler-friendly runtime
+entrypoint after prior S3 research output has completed:
+  --run-retest-refresh-cycle-from-latest-state
+  --output-s3-bucket nangman-crypto-dev-research-<account-suffix>
+  --market-l1-s3-bucket nangman-crypto-dev-market-ingest-l1-<account-suffix>
 
 Retest cycle scheduler mode is safe to call repeatedly. It does not write a
 manifest before run_not_before_ms, and if an old WAIT status is past due it asks

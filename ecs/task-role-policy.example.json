@@ -26,6 +26,16 @@
       ]
     },
     {
+      "Sid": "ListResearchRuntimeState",
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListBucket"
+      ],
+      "Resource": [
+        "arn:aws:s3:::nangman-crypto-dev-research-<account-suffix>"
+      ]
+    },
+    {
       "Sid": "ReadHistoricalResearchOutputs",
       "Effect": "Allow",
       "Action": [
@@ -33,6 +43,7 @@
       ],
       "Resource": [
         "arn:aws:s3:::nangman-crypto-dev-research-<account-suffix>/research-input-manifest/*",
+        "arn:aws:s3:::nangman-crypto-dev-research-<account-suffix>/retest-cycle-source-state/*",
         "arn:aws:s3:::nangman-crypto-dev-research-<account-suffix>/replay-run/*",
         "arn:aws:s3:::nangman-crypto-dev-research-<account-suffix>/replay-run-index/*",
         "arn:aws:s3:::nangman-crypto-dev-research-<account-suffix>/hypothesis-harness/hypothesis-harness-result/*"
@@ -49,6 +60,7 @@
         "arn:aws:s3:::nangman-crypto-dev-research-<account-suffix>/replay-run/*",
         "arn:aws:s3:::nangman-crypto-dev-research-<account-suffix>/replay-run-index/*",
         "arn:aws:s3:::nangman-crypto-dev-research-<account-suffix>/shadow-validation-run/*",
+        "arn:aws:s3:::nangman-crypto-dev-research-<account-suffix>/retest-cycle-source-state/*",
         "arn:aws:s3:::nangman-crypto-dev-research-<account-suffix>/research-aggregate-registry/*"
       ]
     }

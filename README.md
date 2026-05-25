@@ -438,6 +438,14 @@ same key and does not emit another `ObjectCreated` event; once Market-L1 or the
 selection changes, the key changes and the dispatcher can run the next research
 sample.
 
+When a prior S3 research run has completed, `research-app` also writes a
+non-dispatching `retest-cycle-source-state/` checkpoint that links the source
+manifest key to the report key it produced. EventBridge or another scheduler can
+then call `--run-retest-refresh-cycle-from-latest-state` with only the research
+bucket and Market-L1 bucket. The app discovers the latest manifest/report pair
+from that checkpoint, refreshes the status from current Market-L1 evidence, and
+keeps the same focused-manifest dedupe guard.
+
 ```bash
 cargo run -- \
   --run-retest-refresh-cycle \
@@ -447,6 +455,13 @@ cargo run -- \
   --research-report-s3-key research-run-report/schema=research_run_report_v1/.../report.json \
   --market-l1-s3-bucket nangman-crypto-dev-market-ingest-l1-<account-suffix> \
   --output-s3-bucket nangman-crypto-dev-research-<account-suffix>
+```
+
+```bash
+cargo run -- \
+  --run-retest-refresh-cycle-from-latest-state \
+  --output-s3-bucket nangman-crypto-dev-research-<account-suffix> \
+  --market-l1-s3-bucket nangman-crypto-dev-market-ingest-l1-<account-suffix>
 ```
 
 The legacy shell planner remains useful for local diagnosis:
