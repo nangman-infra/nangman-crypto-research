@@ -311,6 +311,53 @@ fn shadow_cycle_wait_decision_json() -> Value {
     })
 }
 
+fn shadow_validation_run_json(
+    shadow_validation_run_id: &str,
+    candidate_lifecycle_key: &str,
+    symbol: &str,
+    decision_available_ms: i64,
+    min_shadow_samples: usize,
+) -> Value {
+    json!({
+        "schema_version": "shadow_validation_run_v1",
+        "shadow_validation_run_id": shadow_validation_run_id,
+        "candidate_lifecycle_key": candidate_lifecycle_key,
+        "symbol_canonical": symbol,
+        "trigger_research_run_id": "research_report_test",
+        "start_condition_summary": {
+            "research_aggregate_key": "aggregate_test",
+            "gate_policy_version": "test_gate_policy",
+            "completed_count": 30,
+            "mean_net_after_cost_bps": 12.0,
+            "win_rate_ppm": 600000,
+            "profit_factor_ppm": 1200000,
+            "gate_reason_codes": ["deterministic_shadow_gate_passed"]
+        },
+        "expected_survival_band": "stable",
+        "watch_window_policy": {
+            "mode": "forward_observation_only",
+            "min_shadow_samples": min_shadow_samples,
+            "max_shadow_age_days": 30
+        },
+        "termination_policy": {
+            "prune_on_non_positive_mean_net": true,
+            "prune_on_max_age_without_samples": true,
+            "no_order_execution": true
+        },
+        "holding_policy": {
+            "target_max_holding_hours": 24,
+            "absolute_max_holding_hours": 72,
+            "absolute_exit_deadline_ms": decision_available_ms + (72_i64 * 60 * 60 * 1000),
+            "force_flat_policy": "daily_or_ttl_exit",
+            "overnight_risk_exception": false,
+            "holding_policy_version": "crypto_intraday_holding_policy_v1_2026_05_12"
+        },
+        "status": "pending",
+        "passed": false,
+        "paper_trade_candidate_contract_version": "paper_trade_candidate_v1"
+    })
+}
+
 #[test]
 fn parse_args_requires_absolute_input_path() {
     let error = parse_args(
@@ -335,6 +382,86 @@ fn parse_args_requires_absolute_shadow_cycle_decision_path() {
     )
     .expect_err("relative path should fail");
     assert!(error.to_string().contains("absolute path"));
+}
+
+#[tokio::test]
+async fn build_shadow_cycle_decision_from_shadow_runs() {
+    let root = test_root("shadow-decision-build-cli");
+    let shadow_file = root.join("shadow-runs.json");
+    let output_file = root.join("shadow-cycle-decision.json");
+    let decision_ms = 1_780_000_000_000_i64;
+    let materialized_target_ms = decision_ms + DAY_MS;
+    let later_decision_ms = decision_ms + 2 * 60 * 60 * 1000;
+    write_json(
+        &shadow_file,
+        &json!([
+            shadow_validation_run_json("shadow_a", "cand_a", "XAUT", decision_ms, 30),
+            shadow_validation_run_json("shadow_b", "cand_b", "CHIP", later_decision_ms, 30)
+        ]),
+    );
+
+    let args = parse_args(
+        [
+            "--build-shadow-cycle-decision".to_owned(),
+            "--shadow-validation-run-file".to_owned(),
+            shadow_file.display().to_string(),
+            "--shadow-cycle-latest-l1-as-of-ms".to_owned(),
+            materialized_target_ms.to_string(),
+            "--shadow-cycle-decision-output-file".to_owned(),
+            output_file.display().to_string(),
+            "--now-ms".to_owned(),
+            "1780100000000".to_owned(),
+        ]
+        .into_iter(),
+    )
+    .expect("build args parse")
+    .expect("build args returned");
+
+    let summary = run(args).await.expect("shadow cycle decision builds");
+    assert_eq!(summary.shadow_cycle_decisions_created, 1);
+    assert_eq!(summary.shadow_cycle_decisions_validated, 1);
+    assert_eq!(
+        summary.shadow_cycle_scheduler_action,
+        Some(ShadowCycleSchedulerAction::WaitUntilTargetWindowMaterializes)
+    );
+    assert_eq!(summary.shadow_validation_runs_loaded, 2);
+    assert_eq!(
+        summary.output_files,
+        vec![output_file.display().to_string()]
+    );
+
+    let decision: Value = serde_json::from_slice(
+        &fs::read(&output_file).expect("shadow cycle decision file is written"),
+    )
+    .expect("shadow cycle decision parses");
+    assert_eq!(
+        decision["source_verdict"],
+        json!("WAIT_FOR_TARGET_HOLDING_WINDOW")
+    );
+    assert_eq!(
+        decision["shadow_sample_state"]["target_window_materialized_count"],
+        json!(1)
+    );
+    assert_eq!(
+        decision["shadow_sample_state"]["pending_target_window_candidate_count"],
+        json!(1)
+    );
+    assert_eq!(decision["safety"]["order_execution_enabled"], json!(false));
+}
+
+#[test]
+fn build_shadow_cycle_decision_requires_output_target() {
+    let error = parse_args(
+        [
+            "--build-shadow-cycle-decision".to_owned(),
+            "--shadow-validation-run-file".to_owned(),
+            "/tmp/shadow-runs.json".to_owned(),
+        ]
+        .into_iter(),
+    )
+    .expect_err("build mode requires an output target");
+
+    assert!(error.to_string().contains("output"));
 }
 
 #[tokio::test]
