@@ -35,10 +35,10 @@ use crate::storage::{
     discover_latest_market_feature_delta_keys_from_s3,
     discover_latest_market_regime_context_keys_from_s3,
     discover_latest_symbol_universe_snapshot_end_ms_from_s3,
-    discover_replay_run_index_keys_from_s3, read_candidate_bundles_from_s3,
-    read_latest_retest_cycle_source_state_from_s3, read_market_feature_deltas_from_s3,
-    read_market_regime_contexts_from_s3, read_oss_adapter_runs_from_s3,
-    read_replay_run_index_records_from_s3, read_replay_runs_from_s3,
+    discover_replay_run_index_keys_from_s3, discover_shadow_validation_run_keys_from_s3,
+    read_candidate_bundles_from_s3, read_latest_retest_cycle_source_state_from_s3,
+    read_market_feature_deltas_from_s3, read_market_regime_contexts_from_s3,
+    read_oss_adapter_runs_from_s3, read_replay_run_index_records_from_s3, read_replay_runs_from_s3,
     read_research_input_manifest_from_s3, read_research_run_report_from_s3,
     read_retest_horizon_plan_from_s3, read_retest_horizon_status_from_s3,
     read_shadow_validation_runs_from_s3, write_research_input_manifest_to_exact_s3_key_if_absent,
@@ -60,10 +60,15 @@ const MARKET_REGIME_CONTEXT_ARTIFACT_TYPE: &str = "market_regime_context";
 const MARKET_L1_REPLAY_WINDOW_MS: i64 = 15 * 60 * 1000;
 const DEFAULT_HISTORICAL_REPLAY_RUN_INDEX_READ_LIMIT: usize = 20;
 const DEFAULT_HISTORICAL_REPLAY_RUN_INDEX_SCAN_LIMIT: usize = 1_000;
+const DEFAULT_SHADOW_VALIDATION_RUN_READ_LIMIT: usize = 100;
+const DEFAULT_SHADOW_VALIDATION_RUN_SCAN_LIMIT: usize = 1_000;
+const DEFAULT_SHADOW_VALIDATION_RUN_PREFIX: &str =
+    "shadow-validation-run/schema=shadow_validation_run_v1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Args {
     pub build_shadow_cycle_decision: bool,
+    pub run_shadow_cycle_from_latest_state: bool,
     pub build_retest_horizon_plan: bool,
     pub run_retest_refresh_cycle: bool,
     pub run_retest_refresh_cycle_from_latest_state: bool,
@@ -185,6 +190,7 @@ where
         .unwrap_or_else(default_focused_retest_actions);
     let mut args = Args {
         build_shadow_cycle_decision: env_bool("RESEARCH_BUILD_SHADOW_CYCLE_DECISION"),
+        run_shadow_cycle_from_latest_state: env_bool("RESEARCH_RUN_SHADOW_CYCLE_FROM_LATEST_STATE"),
         build_retest_horizon_plan: env_bool("RESEARCH_BUILD_RETEST_HORIZON_PLAN"),
         run_retest_refresh_cycle: env_bool("RESEARCH_RUN_RETEST_REFRESH_CYCLE"),
         run_retest_refresh_cycle_from_latest_state: env_bool(
@@ -260,6 +266,9 @@ where
             "-h" | "--help" => return Ok(None),
             "--build-shadow-cycle-decision" => {
                 args.build_shadow_cycle_decision = true;
+            }
+            "--run-shadow-cycle-from-latest-state" => {
+                args.run_shadow_cycle_from_latest_state = true;
             }
             "--build-retest-horizon-plan" => {
                 args.build_retest_horizon_plan = true;
@@ -599,9 +608,11 @@ where
         }
     }
 
-    if args.shadow_cycle_decision_file.is_some() && args.build_shadow_cycle_decision {
+    if args.shadow_cycle_decision_file.is_some()
+        && (args.build_shadow_cycle_decision || args.run_shadow_cycle_from_latest_state)
+    {
         return Err(AppError::config(
-            "use either --shadow-cycle-decision-file or --build-shadow-cycle-decision, not both",
+            "use shadow cycle decision validation separately from shadow cycle build modes",
         ));
     }
     if args.run_retest_cycle_scheduler && args.build_focused_retest_manifest {
@@ -614,7 +625,8 @@ where
             || args.run_retest_refresh_cycle
             || args.run_retest_refresh_cycle_from_latest_state
             || args.run_retest_cycle_scheduler
-            || args.build_focused_retest_manifest)
+            || args.build_focused_retest_manifest
+            || args.run_shadow_cycle_from_latest_state)
     {
         return Err(AppError::config(
             "use --build-retest-horizon-plan separately from retest status, scheduler, or focused manifest modes",
@@ -624,14 +636,17 @@ where
         && (args.build_retest_horizon_status
             || args.run_retest_refresh_cycle_from_latest_state
             || args.run_retest_cycle_scheduler
-            || args.build_focused_retest_manifest)
+            || args.build_focused_retest_manifest
+            || args.run_shadow_cycle_from_latest_state)
     {
         return Err(AppError::config(
             "use --run-retest-refresh-cycle separately from retest status, scheduler, or focused manifest modes",
         ));
     }
     if args.run_retest_refresh_cycle_from_latest_state
-        && (args.run_retest_cycle_scheduler || args.build_focused_retest_manifest)
+        && (args.run_retest_cycle_scheduler
+            || args.build_focused_retest_manifest
+            || args.run_shadow_cycle_from_latest_state)
     {
         return Err(AppError::config(
             "use --run-retest-refresh-cycle-from-latest-state separately from retest scheduler or focused manifest modes",
@@ -640,14 +655,17 @@ where
     if args.build_retest_horizon_status
         && (args.run_retest_refresh_cycle_from_latest_state
             || args.run_retest_cycle_scheduler
-            || args.build_focused_retest_manifest)
+            || args.build_focused_retest_manifest
+            || args.run_shadow_cycle_from_latest_state)
     {
         return Err(AppError::config(
             "use --build-retest-horizon-status separately from retest scheduler or focused manifest modes",
         ));
     }
     if has_retest_horizon_status_input(&args)
-        && (args.shadow_cycle_decision_file.is_some() || args.build_shadow_cycle_decision)
+        && (args.shadow_cycle_decision_file.is_some()
+            || args.build_shadow_cycle_decision
+            || args.run_shadow_cycle_from_latest_state)
     {
         return Err(AppError::config(
             "use retest horizon status inputs separately from shadow cycle decision modes",
@@ -678,6 +696,10 @@ where
     }
     if args.build_focused_retest_manifest {
         validate_focused_retest_manifest_build_args(&args)?;
+        return Ok(Some(args));
+    }
+    if args.run_shadow_cycle_from_latest_state {
+        validate_shadow_cycle_from_latest_state_args(&args)?;
         return Ok(Some(args));
     }
     if has_retest_horizon_status_input(&args) {
@@ -770,6 +792,9 @@ pub async fn run(args: Args) -> AppResult<RunSummary> {
     }
     if args.run_retest_refresh_cycle_from_latest_state {
         return run_retest_refresh_cycle_from_latest_state_mode(&args).await;
+    }
+    if args.run_shadow_cycle_from_latest_state {
+        return run_shadow_cycle_from_latest_state_mode(&args).await;
     }
     if args.build_retest_horizon_plan {
         return build_retest_horizon_plan_mode(&args).await;
@@ -1586,6 +1611,19 @@ async fn retest_plan_latest_l1_as_of_ms(args: &Args) -> AppResult<Option<i64>> {
     discover_latest_symbol_universe_snapshot_end_ms_from_s3(bucket).await
 }
 
+async fn shadow_cycle_latest_l1_as_of_ms(args: &Args) -> AppResult<Option<i64>> {
+    if let Some(latest_l1_as_of_ms) = args.shadow_cycle_latest_l1_as_of_ms {
+        return Ok(Some(latest_l1_as_of_ms));
+    }
+    let Some(bucket) = args.market_l1_s3_bucket.as_deref() else {
+        return Ok(None);
+    };
+    if bucket.contains('<') || bucket.contains('>') {
+        return Ok(None);
+    }
+    discover_latest_symbol_universe_snapshot_end_ms_from_s3(bucket).await
+}
+
 fn input_manifest_label(args: &Args) -> String {
     if let Some(path) = args.input_manifest_file.as_deref() {
         return path.display().to_string();
@@ -1949,6 +1987,58 @@ async fn write_shadow_cycle_decision_outputs(
     Err(AppError::config(
         "shadow cycle decision output target is required",
     ))
+}
+
+async fn run_shadow_cycle_from_latest_state_mode(args: &Args) -> AppResult<RunSummary> {
+    let output_partition_at_ms = args.now_ms.unwrap_or_else(now_ms);
+    let output_bucket = args.output_s3_bucket.as_deref().ok_or_else(|| {
+        AppError::config("--run-shadow-cycle-from-latest-state requires --output-s3-bucket")
+    })?;
+    let shadow_keys = discover_shadow_validation_run_keys_from_s3(
+        output_bucket,
+        DEFAULT_SHADOW_VALIDATION_RUN_PREFIX,
+        DEFAULT_SHADOW_VALIDATION_RUN_READ_LIMIT,
+        DEFAULT_SHADOW_VALIDATION_RUN_SCAN_LIMIT,
+    )
+    .await?;
+    let shadow_runs = if shadow_keys.is_empty() {
+        Vec::new()
+    } else {
+        read_shadow_validation_runs_from_s3(output_bucket, &shadow_keys).await?
+    };
+    let latest_l1_as_of_ms = shadow_cycle_latest_l1_as_of_ms(args).await?;
+    let decision =
+        build_shadow_cycle_decision(&shadow_runs, latest_l1_as_of_ms, output_partition_at_ms);
+    let output_files =
+        write_shadow_cycle_decision_outputs(args, &decision, output_partition_at_ms).await?;
+
+    Ok(RunSummary {
+        retest_horizon_plans_created: 0,
+        retest_horizon_statuses_validated: 0,
+        retest_cycle_scheduler_action: None,
+        retest_cycle_run_not_before_ms: None,
+        focused_retest_manifests_created: 0,
+        focused_retest_horizon_count: 0,
+        focused_retest_candidate_bundle_refs: 0,
+        shadow_cycle_decisions_validated: 1,
+        shadow_cycle_decisions_created: 1,
+        shadow_cycle_scheduler_action: Some(decision.scheduler_action),
+        shadow_cycle_run_not_before_ms: decision.run_not_before_ms,
+        shadow_cycle_focused_research_manifest_file: decision.focused_research_manifest_file,
+        processed_bundles: 0,
+        replay_runs_created: 0,
+        historical_replay_runs_loaded: 0,
+        oss_adapter_runs_loaded: 0,
+        shadow_validation_runs_loaded: shadow_runs.len(),
+        shadow_validation_runs_created: 0,
+        paper_trade_candidates_created: 0,
+        paper_trade_runs_created: 0,
+        paper_trade_summaries_created: 0,
+        paper_trade_marks_created: 0,
+        portfolio_risk_reject_events_created: 0,
+        portfolio_reduce_only_signals_created: 0,
+        output_files,
+    })
 }
 
 async fn load_input_manifest(args: &Args) -> AppResult<Option<ResearchInputManifest>> {
@@ -3254,6 +3344,37 @@ fn validate_shadow_cycle_build_args(args: &Args) -> AppResult<()> {
     Ok(())
 }
 
+fn validate_shadow_cycle_from_latest_state_args(args: &Args) -> AppResult<()> {
+    if args.output_dir.is_some() {
+        return Err(AppError::config(
+            "--run-shadow-cycle-from-latest-state uses --output-s3-bucket, not --output-dir",
+        ));
+    }
+    if args.shadow_cycle_decision_output_file.is_some() {
+        return Err(AppError::config(
+            "--run-shadow-cycle-from-latest-state uses --output-s3-bucket, not --shadow-cycle-decision-output-file",
+        ));
+    }
+    if args.output_s3_bucket.is_none() {
+        return Err(AppError::config(
+            "--run-shadow-cycle-from-latest-state requires --output-s3-bucket",
+        ));
+    }
+    if args.input_manifest_file.is_some() || args.input_manifest_s3_key.is_some() {
+        return Err(AppError::config(
+            "--run-shadow-cycle-from-latest-state discovers shadow inputs from S3; do not pass manifest input",
+        ));
+    }
+    if !args.shadow_validation_run_files.is_empty()
+        || !args.shadow_validation_run_s3_keys.is_empty()
+    {
+        return Err(AppError::config(
+            "--run-shadow-cycle-from-latest-state discovers shadow inputs from S3; do not pass explicit shadow validation inputs",
+        ));
+    }
+    Ok(())
+}
+
 fn non_empty_arg(value: Option<String>, message: &str) -> AppResult<String> {
     let value = value.ok_or_else(|| AppError::config(message))?;
     if value.trim().is_empty() {
@@ -3413,6 +3534,12 @@ The same mode can run in ECS with S3 input/output:
   --shadow-validation-run-s3-key shadow-validation-run/schema=shadow_validation_run_v1/dt=.../part-000001.jsonl
   --output-s3-bucket nangman-crypto-dev-research-<account-suffix>
   --output-s3-prefix shadow-cycle/
+
+The ECS scheduler can also discover the latest shadow-validation-run artifacts
+from the research bucket and write a fresh shadow-cycle-decision artifact:
+  --run-shadow-cycle-from-latest-state
+  --output-s3-bucket nangman-crypto-dev-research-<account-suffix>
+  --market-l1-s3-bucket nangman-crypto-dev-market-ingest-l1-<account-suffix>
 
 Market L1 replay input can be loaded from S3 in ECS:
   --market-l1-s3-bucket nangman-crypto-dev-market-ingest-l1-<account-suffix>

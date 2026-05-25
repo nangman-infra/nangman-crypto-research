@@ -296,6 +296,40 @@ pub async fn discover_replay_run_index_keys_from_s3(
     Ok(select_latest_payload_keys(objects, read_limit))
 }
 
+pub async fn discover_shadow_validation_run_keys_from_s3(
+    bucket: &str,
+    prefix: &str,
+    read_limit: usize,
+    scan_limit: usize,
+) -> AppResult<Vec<String>> {
+    if bucket.trim().is_empty() {
+        return Err(AppError::config(
+            "shadow validation run S3 bucket must not be empty",
+        ));
+    }
+    if prefix.trim().is_empty() {
+        return Err(AppError::config(
+            "shadow validation run S3 prefix must not be empty",
+        ));
+    }
+    if read_limit == 0 {
+        return Err(AppError::config(
+            "shadow validation run S3 read limit must be greater than zero",
+        ));
+    }
+    if scan_limit == 0 {
+        return Err(AppError::config(
+            "shadow validation run S3 scan limit must be greater than zero",
+        ));
+    }
+
+    let client = s3_client().await?;
+    let objects =
+        list_payload_objects_with_prefix(&client, bucket, prefix, "/part-000001.jsonl", scan_limit)
+            .await?;
+    Ok(select_latest_payload_keys(objects, read_limit))
+}
+
 pub async fn read_oss_adapter_runs_from_s3(
     bucket: &str,
     keys: &[String],
