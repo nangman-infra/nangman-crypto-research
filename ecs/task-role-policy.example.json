@@ -59,8 +59,12 @@
         "arn:aws:s3:::nangman-crypto-dev-research-<account-suffix>/research-run-report/*",
         "arn:aws:s3:::nangman-crypto-dev-research-<account-suffix>/replay-run/*",
         "arn:aws:s3:::nangman-crypto-dev-research-<account-suffix>/replay-run-index/*",
+        "arn:aws:s3:::nangman-crypto-dev-research-<account-suffix>/retest-horizon-plan/*",
+        "arn:aws:s3:::nangman-crypto-dev-research-<account-suffix>/retest-horizon-status/*",
+        "arn:aws:s3:::nangman-crypto-dev-research-<account-suffix>/research-input-manifest/*",
         "arn:aws:s3:::nangman-crypto-dev-research-<account-suffix>/shadow-validation-run/*",
         "arn:aws:s3:::nangman-crypto-dev-research-<account-suffix>/retest-cycle-source-state/*",
+        "arn:aws:s3:::nangman-crypto-dev-research-<account-suffix>/portfolio-allocation-snapshot/*",
         "arn:aws:s3:::nangman-crypto-dev-research-<account-suffix>/research-aggregate-registry/*"
       ]
     }

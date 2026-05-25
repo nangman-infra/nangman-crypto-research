@@ -1,0 +1,33 @@
+{
+  "Arn": "arn:aws:ecs:ap-northeast-2:<aws-account-id>:cluster/ecs-nangman-dev-invest-apn2",
+  "RoleArn": "arn:aws:iam::<aws-account-id>:role/role-nangman-dev-research-scheduler",
+  "EcsParameters": {
+    "CapacityProviderStrategy": [
+      {
+        "capacityProvider": "FARGATE_SPOT",
+        "weight": 1,
+        "base": 0
+      }
+    ],
+    "TaskDefinitionArn": "arn:aws:ecs:ap-northeast-2:<aws-account-id>:task-definition/td-nangman-dev-research-apn2:<revision>",
+    "TaskCount": 1,
+    "NetworkConfiguration": {
+      "awsvpcConfiguration": {
+        "Subnets": [
+          "<private-subnet-id-a>",
+          "<private-subnet-id-b>",
+          "<private-subnet-id-c>"
+        ],
+        "SecurityGroups": [
+          "<research-security-group-id>"
+        ],
+        "AssignPublicIp": "DISABLED"
+      }
+    }
+  },
+  "RetryPolicy": {
+    "MaximumRetryAttempts": 0,
+    "MaximumEventAgeInSeconds": 60
+  },
+  "Input": "{\"containerOverrides\":[{\"name\":\"research-app\",\"command\":[\"--run-retest-refresh-cycle-from-latest-state\",\"--output-s3-bucket\",\"nangman-crypto-dev-research-<account-suffix>\",\"--market-l1-s3-bucket\",\"nangman-crypto-dev-market-ingest-l1-<account-suffix>\"]}]}"
+}

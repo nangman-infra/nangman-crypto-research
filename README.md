@@ -464,6 +464,48 @@ cargo run -- \
   --market-l1-s3-bucket nangman-crypto-dev-market-ingest-l1-<account-suffix>
 ```
 
+Runtime wake-up model:
+
+```text
+research-input-manifest/ ObjectCreated
+  -> S3 notification
+  -> research-s3-dispatcher Lambda
+  -> one ECS research task
+
+EventBridge Scheduler rate tick
+  -> one ECS retest-refresh task
+  -> latest retest-cycle-source-state/ lookup
+  -> Market-L1 horizon refresh
+  -> writes a new research-input-manifest/ only when another research sample is due
+  -> S3 notification wakes the normal dispatcher path
+```
+
+S3 is still the durable state truth. The Scheduler is only a wake-up signal for
+checking whether the latest source state and Market-L1 horizon require another
+focused retest manifest. It must run on `FARGATE_SPOT`, use private subnets, and
+must not enable shadow, paper, live, or order execution.
+
+Example Scheduler support files:
+
+```text
+ecs/scheduler-assume-role-policy.example.json
+ecs/scheduler-run-task-policy.example.json
+ecs/retest-refresh-scheduler-target.example.json
+```
+
+Create or update the recurring Scheduler from a private operator context after
+replacing placeholders:
+
+```bash
+aws scheduler create-schedule \
+  --name sch-nangman-dev-research-retest-refresh-apn2 \
+  --schedule-expression 'rate(15 minutes)' \
+  --flexible-time-window Mode=OFF \
+  --state ENABLED \
+  --description 'Runs research-app retest refresh cycle from latest source state on ECS Fargate Spot' \
+  --target file://ecs/retest-refresh-scheduler-target.example.json
+```
+
 The legacy shell planner remains useful for local diagnosis:
 
 ```bash

@@ -1,0 +1,28 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "RunResearchRetestRefreshTask",
+      "Effect": "Allow",
+      "Action": "ecs:RunTask",
+      "Resource": [
+        "arn:aws:ecs:ap-northeast-2:<aws-account-id>:task-definition/td-nangman-dev-research-apn2",
+        "arn:aws:ecs:ap-northeast-2:<aws-account-id>:task-definition/td-nangman-dev-research-apn2:*"
+      ],
+      "Condition": {
+        "ArnEquals": {
+          "ecs:cluster": "arn:aws:ecs:ap-northeast-2:<aws-account-id>:cluster/ecs-nangman-dev-invest-apn2"
+        }
+      }
+    },
+    {
+      "Sid": "PassResearchTaskRoles",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": [
+        "arn:aws:iam::<aws-account-id>:role/role-nangman-dev-research-exec",
+        "arn:aws:iam::<aws-account-id>:role/role-nangman-dev-research-task"
+      ]
+    }
+  ]
+}
