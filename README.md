@@ -431,7 +431,12 @@ mode writes fresh checkpoints under non-dispatching `retest-horizon-plan/` and
 `retest-horizon-status/` prefixes. It writes under `research-input-manifest/`
 only when the rebuilt status says `RUN_FOCUSED_RETEST_RESEARCH`; that S3 write
 wakes the existing S3 notification -> Lambda -> ECS research path. A WAIT status
-creates no dispatcher manifest.
+creates no dispatcher manifest. S3 focused manifests are written with a stable
+dedupe key derived from the source manifest, source report, latest Market-L1
+watermark, and selected retest rows. Re-running the same refresh cycle keeps the
+same key and does not emit another `ObjectCreated` event; once Market-L1 or the
+selection changes, the key changes and the dispatcher can run the next research
+sample.
 
 ```bash
 cargo run -- \

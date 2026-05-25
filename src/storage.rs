@@ -568,6 +568,21 @@ pub async fn write_research_input_manifest_to_s3(
     Ok(format!("s3://{bucket}/{key}"))
 }
 
+pub async fn write_research_input_manifest_to_exact_s3_key_if_absent(
+    bucket: &str,
+    key: &str,
+    manifest: &ResearchInputManifest,
+) -> AppResult<Option<String>> {
+    validate_s3_location(bucket, key, "research input manifest output")?;
+    validate_research_input_manifest_s3_key(key)?;
+    let client = s3_client().await?;
+    let body = serde_json::to_vec_pretty(manifest)?;
+    match put_object_bytes_if_absent(&client, bucket, key, body, "application/json").await? {
+        PutIfAbsentResult::Created => Ok(Some(format!("s3://{bucket}/{key}"))),
+        PutIfAbsentResult::AlreadyExists => Ok(None),
+    }
+}
+
 pub async fn write_retest_horizon_plan_to_s3(
     bucket: &str,
     prefix: &str,
@@ -945,6 +960,21 @@ fn validate_s3_location(bucket: &str, key: &str, label: &str) -> AppResult<()> {
     Ok(())
 }
 
+fn validate_research_input_manifest_s3_key(key: &str) -> AppResult<()> {
+    let trimmed = key.trim().trim_start_matches('/');
+    if !trimmed.starts_with("research-input-manifest/") {
+        return Err(AppError::config(
+            "research input manifest S3 key must start with research-input-manifest/",
+        ));
+    }
+    if !(trimmed.ends_with(".json") || trimmed.ends_with(".jsonl")) {
+        return Err(AppError::config(
+            "research input manifest S3 key must end with .json or .jsonl",
+        ));
+    }
+    Ok(())
+}
+
 async fn s3_client() -> AppResult<Client> {
     let endpoint = env_s3_endpoint();
     let force_path_style =
@@ -1046,6 +1076,44 @@ async fn put_object_bytes(
             ))
         })?;
     Ok(())
+}
+
+enum PutIfAbsentResult {
+    Created,
+    AlreadyExists,
+}
+
+async fn put_object_bytes_if_absent(
+    client: &Client,
+    bucket: &str,
+    key: &str,
+    body: Vec<u8>,
+    content_type: &str,
+) -> AppResult<PutIfAbsentResult> {
+    client
+        .put_object()
+        .bucket(bucket)
+        .key(key)
+        .content_type(content_type)
+        .if_none_match("*")
+        .body(body.into())
+        .send()
+        .await
+        .map(|_| PutIfAbsentResult::Created)
+        .or_else(|error| {
+            if let Some(service_error) = error.as_service_error()
+                && matches!(
+                    service_error.code(),
+                    Some("PreconditionFailed" | "ConditionalRequestConflict")
+                )
+            {
+                return Ok(PutIfAbsentResult::AlreadyExists);
+            }
+            Err(AppError::Aws(format!(
+                "s3 put_object if_absent s3://{bucket}/{key}: {}",
+                aws_error_detail(&error)
+            )))
+        })
 }
 
 fn aws_error_detail(error: &(impl std::fmt::Debug + std::fmt::Display)) -> String {

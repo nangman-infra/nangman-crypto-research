@@ -4,6 +4,7 @@ use crate::focused_retest::{
     FocusedRetestBuildOptions, FocusedRetestManifestBuild, HistoricalReplayIndexRefMode,
     build_focused_retest_manifest, default_focused_retest_actions, parse_focused_retest_actions,
 };
+use crate::hash::stable_id;
 use crate::io::{
     ResearchOutputArtifacts, read_candidate_bundles, read_market_feature_deltas,
     read_market_regime_contexts, read_oss_adapter_runs, read_replay_run_index_records,
@@ -38,9 +39,10 @@ use crate::storage::{
     read_oss_adapter_runs_from_s3, read_replay_run_index_records_from_s3, read_replay_runs_from_s3,
     read_research_input_manifest_from_s3, read_research_run_report_from_s3,
     read_retest_horizon_plan_from_s3, read_retest_horizon_status_from_s3,
-    read_shadow_validation_runs_from_s3, write_research_input_manifest_to_s3,
-    write_research_outputs_to_s3, write_retest_horizon_plan_to_s3,
-    write_retest_horizon_status_to_s3, write_shadow_cycle_decision_to_s3,
+    read_shadow_validation_runs_from_s3, write_research_input_manifest_to_exact_s3_key_if_absent,
+    write_research_input_manifest_to_s3, write_research_outputs_to_s3,
+    write_retest_horizon_plan_to_s3, write_retest_horizon_status_to_s3,
+    write_shadow_cycle_decision_to_s3,
 };
 use crate::time::now_ms;
 use serde::Serialize;
@@ -1134,11 +1136,12 @@ async fn run_retest_refresh_cycle_mode(args: &Args) -> AppResult<RunSummary> {
         write_retest_refresh_cycle_status_output(args, &status, output_partition_at_ms).await?,
     );
 
+    let mut retest_cycle_scheduler_action = validation.scheduler_action;
     let mut focused_retest_manifests_created = 0;
     let mut focused_retest_horizon_count = 0;
     let mut focused_retest_candidate_bundle_refs = 0;
-    if validation.scheduler_action == "RUN_FOCUSED_RETEST_RESEARCH" {
-        let build = build_focused_retest_manifest(
+    if retest_cycle_scheduler_action == "RUN_FOCUSED_RETEST_RESEARCH" {
+        let mut build = build_focused_retest_manifest(
             &status,
             &manifest,
             &FocusedRetestBuildOptions {
@@ -1151,24 +1154,28 @@ async fn run_retest_refresh_cycle_mode(args: &Args) -> AppResult<RunSummary> {
                 s3_write: args.output_s3_bucket.is_some(),
             },
         )?;
-        focused_retest_manifests_created = 1;
+        if args.output_s3_bucket.is_some() {
+            let dispatch_packet_id =
+                focused_retest_dispatch_packet_id(args, latest_l1_as_of_ms, &build)?;
+            build.manifest.research_packet_id = Some(dispatch_packet_id);
+        }
         focused_retest_horizon_count = build.summary.focused.focus_horizon_count;
         focused_retest_candidate_bundle_refs =
             build.summary.focused.selected_candidate_bundle_ref_count;
-        output_files.extend(
-            write_retest_refresh_cycle_focused_manifest_output(
-                args,
-                &build,
-                output_partition_at_ms,
-            )
-            .await?,
-        );
+        let write_result = write_retest_refresh_cycle_focused_manifest_output(args, &build).await?;
+        if write_result.created {
+            focused_retest_manifests_created = 1;
+        } else {
+            retest_cycle_scheduler_action =
+                "SKIP_FOCUSED_RETEST_RESEARCH_ALREADY_DISPATCHED".to_owned();
+        }
+        output_files.extend(write_result.output_files);
     }
 
     Ok(RunSummary {
         retest_horizon_plans_created: 1,
         retest_horizon_statuses_validated: 1,
-        retest_cycle_scheduler_action: Some(validation.scheduler_action),
+        retest_cycle_scheduler_action: Some(retest_cycle_scheduler_action),
         retest_cycle_run_not_before_ms: validation.run_not_before_ms,
         focused_retest_manifests_created,
         focused_retest_horizon_count,
@@ -1561,33 +1568,54 @@ async fn write_retest_refresh_cycle_checkpoint_output(
 async fn write_retest_refresh_cycle_focused_manifest_output(
     args: &Args,
     build: &FocusedRetestManifestBuild,
-    output_partition_at_ms: i64,
-) -> AppResult<Vec<String>> {
+) -> AppResult<FocusedRetestManifestWriteResult> {
     if let Some(output_dir) = args.output_dir.as_deref() {
         let manifest_path = output_dir.join("research-input-manifest.json");
         let summary_path = output_dir.join("research-input-manifest.summary.json");
-        return Ok(vec![
-            write_research_input_manifest(&manifest_path, &build.manifest)?
-                .display()
-                .to_string(),
-            write_pretty_json_file(&summary_path, &build.summary)?
-                .display()
-                .to_string(),
-        ]);
+        return Ok(FocusedRetestManifestWriteResult {
+            created: true,
+            output_files: vec![
+                write_research_input_manifest(&manifest_path, &build.manifest)?
+                    .display()
+                    .to_string(),
+                write_pretty_json_file(&summary_path, &build.summary)?
+                    .display()
+                    .to_string(),
+            ],
+        });
     }
     let Some(bucket) = args.output_s3_bucket.as_deref() else {
         return Err(AppError::config(
             "--run-retest-refresh-cycle requires --output-dir or --output-s3-bucket",
         ));
     };
-    write_research_input_manifest_to_s3(
-        bucket,
-        "research-input-manifest/schema=research_input_manifest_v1",
-        &build.manifest,
-        output_partition_at_ms,
-    )
-    .await
-    .map(|uri| vec![uri])
+    let packet_id = build
+        .manifest
+        .research_packet_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            AppError::validation("focused retest manifest missing research_packet_id")
+        })?;
+    let key = focused_retest_dispatch_manifest_s3_key(packet_id)?;
+    match write_research_input_manifest_to_exact_s3_key_if_absent(bucket, &key, &build.manifest)
+        .await?
+    {
+        Some(uri) => Ok(FocusedRetestManifestWriteResult {
+            created: true,
+            output_files: vec![uri],
+        }),
+        None => Ok(FocusedRetestManifestWriteResult {
+            created: false,
+            output_files: vec![format!("s3://{bucket}/{key}")],
+        }),
+    }
+}
+
+struct FocusedRetestManifestWriteResult {
+    created: bool,
+    output_files: Vec<String>,
 }
 
 async fn write_retest_horizon_plan_outputs(
@@ -1692,6 +1720,54 @@ fn focused_retest_packet_id(args: &Args, output_partition_at_ms: i64) -> String 
     } else {
         args.research_packet_id.clone()
     }
+}
+
+fn focused_retest_dispatch_packet_id(
+    args: &Args,
+    latest_l1_as_of_ms: Option<i64>,
+    build: &FocusedRetestManifestBuild,
+) -> AppResult<String> {
+    let latest_l1_part = latest_l1_as_of_ms
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "none".to_owned());
+    let focus_next_actions = serde_json::to_string(&build.summary.focus_next_actions)?;
+    let focus_rows = serde_json::to_string(&build.summary.focused.rows)?;
+    let candidate_refs = serde_json::to_string(&build.manifest.candidate_bundle_refs)?;
+    let historical_index_refs =
+        serde_json::to_string(&build.manifest.historical_replay_run_index_refs)?;
+    let manifest_label = input_manifest_label(args);
+    let report_label = research_report_label(args);
+    let run_scope = focused_retest_run_scope(args);
+    let parts = [
+        "research_retest_refresh_focused_dispatch_v1".to_owned(),
+        manifest_label,
+        report_label,
+        latest_l1_part,
+        run_scope,
+        focus_next_actions,
+        focus_rows,
+        candidate_refs,
+        historical_index_refs,
+    ];
+    let part_refs = parts.iter().map(String::as_str).collect::<Vec<_>>();
+    Ok(stable_id("research_focus", &part_refs))
+}
+
+fn focused_retest_dispatch_manifest_s3_key(packet_id: &str) -> AppResult<String> {
+    let packet_id = packet_id.trim();
+    if packet_id.is_empty() {
+        return Err(AppError::validation(
+            "focused retest dispatch packet id must not be empty",
+        ));
+    }
+    if packet_id.contains('/') {
+        return Err(AppError::validation(
+            "focused retest dispatch packet id must not contain /",
+        ));
+    }
+    Ok(format!(
+        "research-input-manifest/schema=research_input_manifest_v1/dedupe_key={packet_id}/manifest.json"
+    ))
 }
 
 fn focused_retest_run_scope(args: &Args) -> String {
