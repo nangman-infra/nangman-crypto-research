@@ -70,6 +70,25 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL || secrets.SONAR_HOST_URL }}
 
+      - name: Print SonarQube Quality Gate details
+        if: always()
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL || secrets.SONAR_HOST_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SONAR_TOKEN:-}" ] || [ -z "${SONAR_HOST_URL:-}" ]; then
+            echo "SonarQube credentials are not available for gate detail lookup."
+            exit 0
+          fi
+          host="${SONAR_HOST_URL%/}"
+          curl -fsS -u "${SONAR_TOKEN}:" \
+            "${host}/api/qualitygates/project_status?projectKey=nangman-crypto-research" \
+            | jq -r '
+                "quality_gate_status=\(.projectStatus.status)",
+                (.projectStatus.conditions[]? | "\(.metricKey)=\(.actualValue // "n/a") threshold=\(.errorThreshold // "n/a") comparator=\(.comparator // "n/a") status=\(.status)")
+              '
+
       - name: SonarQube Quality Gate
         uses: SonarSource/sonarqube-quality-gate-action@v1
         timeout-minutes: 5
