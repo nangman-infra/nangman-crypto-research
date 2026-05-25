@@ -52,6 +52,7 @@ const DEFAULT_HISTORICAL_REPLAY_RUN_INDEX_SCAN_LIMIT: usize = 1_000;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Args {
     pub build_shadow_cycle_decision: bool,
+    pub run_retest_cycle_scheduler: bool,
     pub build_focused_retest_manifest: bool,
     pub shadow_cycle_decision_file: Option<PathBuf>,
     pub shadow_cycle_decision_output_file: Option<PathBuf>,
@@ -154,6 +155,7 @@ where
         .unwrap_or_else(default_focused_retest_actions);
     let mut args = Args {
         build_shadow_cycle_decision: env_bool("RESEARCH_BUILD_SHADOW_CYCLE_DECISION"),
+        run_retest_cycle_scheduler: env_bool("RESEARCH_RUN_RETEST_CYCLE_SCHEDULER"),
         build_focused_retest_manifest: env_bool("RESEARCH_BUILD_FOCUSED_RETEST_MANIFEST"),
         shadow_cycle_decision_file: None,
         shadow_cycle_decision_output_file: env_string("RESEARCH_SHADOW_CYCLE_DECISION_OUTPUT_FILE")
@@ -208,6 +210,9 @@ where
             "-h" | "--help" => return Ok(None),
             "--build-shadow-cycle-decision" => {
                 args.build_shadow_cycle_decision = true;
+            }
+            "--run-retest-cycle-scheduler" => {
+                args.run_retest_cycle_scheduler = true;
             }
             "--build-focused-retest-manifest" => {
                 args.build_focused_retest_manifest = true;
@@ -474,6 +479,11 @@ where
             "use either --shadow-cycle-decision-file or --build-shadow-cycle-decision, not both",
         ));
     }
+    if args.run_retest_cycle_scheduler && args.build_focused_retest_manifest {
+        return Err(AppError::config(
+            "use either --run-retest-cycle-scheduler or --build-focused-retest-manifest, not both",
+        ));
+    }
     if has_retest_horizon_status_input(&args)
         && (args.shadow_cycle_decision_file.is_some() || args.build_shadow_cycle_decision)
     {
@@ -482,6 +492,10 @@ where
         ));
     }
     validate_retest_horizon_status_input_args(&args)?;
+    if args.run_retest_cycle_scheduler {
+        validate_retest_cycle_scheduler_args(&args)?;
+        return Ok(Some(args));
+    }
     if args.build_focused_retest_manifest {
         validate_focused_retest_manifest_build_args(&args)?;
         return Ok(Some(args));
@@ -571,6 +585,9 @@ where
 }
 
 pub async fn run(args: Args) -> AppResult<RunSummary> {
+    if args.run_retest_cycle_scheduler {
+        return run_retest_cycle_scheduler_mode(&args).await;
+    }
     if args.build_focused_retest_manifest {
         return build_focused_retest_manifest_mode(&args).await;
     }
@@ -848,6 +865,50 @@ async fn build_shadow_cycle_decision_mode(args: &Args) -> AppResult<RunSummary> 
 
 async fn build_focused_retest_manifest_mode(args: &Args) -> AppResult<RunSummary> {
     let status = load_retest_horizon_status(args).await?;
+    build_focused_retest_manifest_from_status(args, &status, None).await
+}
+
+async fn run_retest_cycle_scheduler_mode(args: &Args) -> AppResult<RunSummary> {
+    let status = load_retest_horizon_status(args).await?;
+    let validation = validate_retest_horizon_status(&status)?;
+    let output_partition_at_ms = args.now_ms.unwrap_or_else(now_ms);
+
+    if validation.scheduler_action == "WAIT_UNTIL_MARKET_L1_HORIZON_MATERIALIZES" {
+        let run_not_before_ms = validation.run_not_before_ms.ok_or_else(|| {
+            AppError::validation("WAIT scheduler action requires run_not_before_ms")
+        })?;
+        if output_partition_at_ms < run_not_before_ms {
+            return Ok(retest_scheduler_summary(
+                validation.scheduler_action,
+                Some(run_not_before_ms),
+            ));
+        }
+        return Ok(retest_scheduler_summary(
+            "REFRESH_RETEST_HORIZON_STATUS_AFTER_WAIT_DEADLINE".to_owned(),
+            Some(run_not_before_ms),
+        ));
+    }
+
+    if validation.scheduler_action == "RUN_FOCUSED_RETEST_RESEARCH" {
+        return build_focused_retest_manifest_from_status(
+            args,
+            &status,
+            Some(validation.scheduler_action),
+        )
+        .await;
+    }
+
+    Ok(retest_scheduler_summary(
+        validation.scheduler_action,
+        validation.run_not_before_ms,
+    ))
+}
+
+async fn build_focused_retest_manifest_from_status(
+    args: &Args,
+    status: &serde_json::Value,
+    scheduler_action: Option<String>,
+) -> AppResult<RunSummary> {
     let source_manifest = load_input_manifest(args).await?.ok_or_else(|| {
         AppError::config(
             "--build-focused-retest-manifest requires --input-manifest-file or S3 manifest input",
@@ -856,7 +917,7 @@ async fn build_focused_retest_manifest_mode(args: &Args) -> AppResult<RunSummary
     validate_input_manifest(Some(&source_manifest))?;
     let output_partition_at_ms = args.now_ms.unwrap_or_else(now_ms);
     let build = build_focused_retest_manifest(
-        &status,
+        status,
         &source_manifest,
         &FocusedRetestBuildOptions {
             generated_at_ms: output_partition_at_ms,
@@ -874,7 +935,7 @@ async fn build_focused_retest_manifest_mode(args: &Args) -> AppResult<RunSummary
 
     Ok(RunSummary {
         retest_horizon_statuses_validated: 1,
-        retest_cycle_scheduler_action: None,
+        retest_cycle_scheduler_action: scheduler_action,
         retest_cycle_run_not_before_ms: None,
         focused_retest_manifests_created: 1,
         focused_retest_horizon_count: focused_horizon_count,
@@ -898,6 +959,38 @@ async fn build_focused_retest_manifest_mode(args: &Args) -> AppResult<RunSummary
         portfolio_reduce_only_signals_created: 0,
         output_files,
     })
+}
+
+fn retest_scheduler_summary(
+    scheduler_action: String,
+    run_not_before_ms: Option<i64>,
+) -> RunSummary {
+    RunSummary {
+        retest_horizon_statuses_validated: 1,
+        retest_cycle_scheduler_action: Some(scheduler_action),
+        retest_cycle_run_not_before_ms: run_not_before_ms,
+        focused_retest_manifests_created: 0,
+        focused_retest_horizon_count: 0,
+        focused_retest_candidate_bundle_refs: 0,
+        shadow_cycle_decisions_validated: 0,
+        shadow_cycle_decisions_created: 0,
+        shadow_cycle_scheduler_action: None,
+        shadow_cycle_run_not_before_ms: None,
+        shadow_cycle_focused_research_manifest_file: None,
+        processed_bundles: 0,
+        replay_runs_created: 0,
+        historical_replay_runs_loaded: 0,
+        oss_adapter_runs_loaded: 0,
+        shadow_validation_runs_loaded: 0,
+        shadow_validation_runs_created: 0,
+        paper_trade_candidates_created: 0,
+        paper_trade_runs_created: 0,
+        paper_trade_summaries_created: 0,
+        paper_trade_marks_created: 0,
+        portfolio_risk_reject_events_created: 0,
+        portfolio_reduce_only_signals_created: 0,
+        output_files: Vec::new(),
+    }
 }
 
 async fn load_retest_horizon_status(args: &Args) -> AppResult<serde_json::Value> {
@@ -1993,6 +2086,19 @@ fn validate_focused_retest_manifest_build_args(args: &Args) -> AppResult<()> {
     Ok(())
 }
 
+fn validate_retest_cycle_scheduler_args(args: &Args) -> AppResult<()> {
+    if !has_retest_horizon_status_input(args) {
+        return Err(AppError::config(
+            "--run-retest-cycle-scheduler requires a retest horizon status input",
+        ));
+    }
+    validate_focused_retest_manifest_build_args(args).map_err(|error| {
+        AppError::config(format!(
+            "--run-retest-cycle-scheduler uses focused retest manifest inputs when execution is due: {error}"
+        ))
+    })
+}
+
 fn validate_shadow_cycle_build_args(args: &Args) -> AppResult<()> {
     if args.output_dir.is_some() && args.output_s3_bucket.is_some() {
         return Err(AppError::config(
@@ -2121,6 +2227,14 @@ Shadow cycle scheduler decisions can be validated without running research:
 
 Retest horizon scheduler handoff can be validated without running research:
   --retest-horizon-status-file /tmp/nangman-crypto/research-current-approved-batch/<run-id>/retest-horizon-status.json
+
+Retest cycle scheduler mode is safe to call repeatedly. It does not write a
+manifest before run_not_before_ms, and if an old WAIT status is past due it asks
+for a fresh retest horizon status instead of triggering stale research:
+  --run-retest-cycle-scheduler
+  --retest-horizon-status-file /tmp/nangman-crypto/research-current-approved-batch/<run-id>/retest-horizon-status.json
+  --input-manifest-file /tmp/nangman-crypto/research-current-approved-batch/<run-id>/research-input-manifest.json
+  --focused-retest-manifest-output-file /tmp/nangman-crypto/research-focus/input-manifest.json
 
 Focused retest manifests can be built without running research:
   --build-focused-retest-manifest

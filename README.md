@@ -855,6 +855,23 @@ cargo run -- \
   --focused-retest-manifest-output-file /tmp/nangman-crypto/research-focus/input-manifest.json
 ```
 
+For repeated scheduler calls, prefer `--run-retest-cycle-scheduler`. This mode
+first validates `retest-horizon-status.json` and only creates a focused manifest
+when the status says `RUN_FOCUSED_RETEST_RESEARCH`. If the status is still
+waiting and `now_ms < run_not_before_ms`, it exits cleanly with a WAIT summary
+and writes no manifest. If the old WAIT status is already past its deadline, it
+returns `REFRESH_RETEST_HORIZON_STATUS_AFTER_WAIT_DEADLINE` instead of creating a
+stale S3 trigger; operators should refresh the horizon status from current
+Market-L1 evidence before dispatching research.
+
+```bash
+cargo run -- \
+  --run-retest-cycle-scheduler \
+  --retest-horizon-status-file /tmp/nangman-crypto/research-current-approved-batch/<run-id>/retest-horizon-status.json \
+  --input-manifest-file /tmp/nangman-crypto/research-current-approved-batch/<run-id>/research-input-manifest.json \
+  --focused-retest-manifest-output-file /tmp/nangman-crypto/research-focus/input-manifest.json
+```
+
 For runtime automation, a scheduler can run the same mode with S3 input and S3
 manifest output. Writing under `research-input-manifest/` wakes the existing
 S3 notification -> Lambda -> ECS research path; the builder itself still does
@@ -862,7 +879,7 @@ not run research, switch the dispatcher, or create shadow/paper/live artifacts:
 
 ```bash
 cargo run -- \
-  --build-focused-retest-manifest \
+  --run-retest-cycle-scheduler \
   --retest-horizon-status-s3-bucket nangman-crypto-dev-research-<account-suffix> \
   --retest-horizon-status-s3-key retest-horizon-status/schema=research_horizon_status_checkpoint_v1/... \
   --input-manifest-s3-bucket nangman-crypto-dev-research-<account-suffix> \
