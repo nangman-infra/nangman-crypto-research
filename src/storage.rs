@@ -268,32 +268,14 @@ pub async fn discover_replay_run_index_keys_from_s3(
     read_limit: usize,
     scan_limit: usize,
 ) -> AppResult<Vec<String>> {
-    if bucket.trim().is_empty() {
-        return Err(AppError::config(
-            "historical replay-run-index S3 bucket must not be empty",
-        ));
-    }
-    if prefix.trim().is_empty() {
-        return Err(AppError::config(
-            "historical replay-run-index S3 prefix must not be empty",
-        ));
-    }
-    if read_limit == 0 {
-        return Err(AppError::config(
-            "historical replay-run-index S3 read limit must be greater than zero",
-        ));
-    }
-    if scan_limit == 0 {
-        return Err(AppError::config(
-            "historical replay-run-index S3 scan limit must be greater than zero",
-        ));
-    }
-
-    let client = s3_client().await?;
-    let objects =
-        list_payload_objects_with_prefix(&client, bucket, prefix, "/part-000001.jsonl", scan_limit)
-            .await?;
-    Ok(select_latest_payload_keys(objects, read_limit))
+    discover_latest_part_jsonl_keys_from_s3(
+        bucket,
+        prefix,
+        read_limit,
+        scan_limit,
+        "historical replay-run-index",
+    )
+    .await
 }
 
 pub async fn discover_shadow_validation_run_keys_from_s3(
@@ -302,25 +284,42 @@ pub async fn discover_shadow_validation_run_keys_from_s3(
     read_limit: usize,
     scan_limit: usize,
 ) -> AppResult<Vec<String>> {
+    discover_latest_part_jsonl_keys_from_s3(
+        bucket,
+        prefix,
+        read_limit,
+        scan_limit,
+        "shadow validation run",
+    )
+    .await
+}
+
+async fn discover_latest_part_jsonl_keys_from_s3(
+    bucket: &str,
+    prefix: &str,
+    read_limit: usize,
+    scan_limit: usize,
+    artifact_label: &str,
+) -> AppResult<Vec<String>> {
     if bucket.trim().is_empty() {
-        return Err(AppError::config(
-            "shadow validation run S3 bucket must not be empty",
-        ));
+        return Err(AppError::config(format!(
+            "{artifact_label} S3 bucket must not be empty"
+        )));
     }
     if prefix.trim().is_empty() {
-        return Err(AppError::config(
-            "shadow validation run S3 prefix must not be empty",
-        ));
+        return Err(AppError::config(format!(
+            "{artifact_label} S3 prefix must not be empty"
+        )));
     }
     if read_limit == 0 {
-        return Err(AppError::config(
-            "shadow validation run S3 read limit must be greater than zero",
-        ));
+        return Err(AppError::config(format!(
+            "{artifact_label} S3 read limit must be greater than zero"
+        )));
     }
     if scan_limit == 0 {
-        return Err(AppError::config(
-            "shadow validation run S3 scan limit must be greater than zero",
-        ));
+        return Err(AppError::config(format!(
+            "{artifact_label} S3 scan limit must be greater than zero"
+        )));
     }
 
     let client = s3_client().await?;
