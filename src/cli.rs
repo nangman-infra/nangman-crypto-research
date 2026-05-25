@@ -126,7 +126,7 @@ pub struct Args {
     pub now_ms: Option<i64>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
 pub struct RunSummary {
     #[serde(default, skip_serializing_if = "is_zero")]
     pub retest_horizon_plans_created: usize,
@@ -2013,31 +2013,14 @@ async fn run_shadow_cycle_from_latest_state_mode(args: &Args) -> AppResult<RunSu
         write_shadow_cycle_decision_outputs(args, &decision, output_partition_at_ms).await?;
 
     Ok(RunSummary {
-        retest_horizon_plans_created: 0,
-        retest_horizon_statuses_validated: 0,
-        retest_cycle_scheduler_action: None,
-        retest_cycle_run_not_before_ms: None,
-        focused_retest_manifests_created: 0,
-        focused_retest_horizon_count: 0,
-        focused_retest_candidate_bundle_refs: 0,
         shadow_cycle_decisions_validated: 1,
         shadow_cycle_decisions_created: 1,
         shadow_cycle_scheduler_action: Some(decision.scheduler_action),
         shadow_cycle_run_not_before_ms: decision.run_not_before_ms,
         shadow_cycle_focused_research_manifest_file: decision.focused_research_manifest_file,
-        processed_bundles: 0,
-        replay_runs_created: 0,
-        historical_replay_runs_loaded: 0,
-        oss_adapter_runs_loaded: 0,
         shadow_validation_runs_loaded: shadow_runs.len(),
-        shadow_validation_runs_created: 0,
-        paper_trade_candidates_created: 0,
-        paper_trade_runs_created: 0,
-        paper_trade_summaries_created: 0,
-        paper_trade_marks_created: 0,
-        portfolio_risk_reject_events_created: 0,
-        portfolio_reduce_only_signals_created: 0,
         output_files,
+        ..RunSummary::default()
     })
 }
 
