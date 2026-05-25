@@ -1479,25 +1479,13 @@ async fn write_retest_refresh_cycle_plan_output(
     plan: &serde_json::Value,
     output_partition_at_ms: i64,
 ) -> AppResult<Vec<String>> {
-    if let Some(output_dir) = args.output_dir.as_deref() {
-        let path = output_dir.join("retest-horizon-plan.json");
-        return Ok(vec![
-            write_pretty_json_file(&path, plan)?.display().to_string(),
-        ]);
-    }
-    let Some(bucket) = args.output_s3_bucket.as_deref() else {
-        return Err(AppError::config(
-            "--run-retest-refresh-cycle requires --output-dir or --output-s3-bucket",
-        ));
-    };
-    write_retest_horizon_plan_to_s3(
-        bucket,
-        "retest-horizon-plan/schema=research_retest_horizon_plan_v1",
+    write_retest_refresh_cycle_checkpoint_output(
+        args,
         plan,
         output_partition_at_ms,
+        RetestRefreshCheckpointKind::Plan,
     )
     .await
-    .map(|uri| vec![uri])
 }
 
 async fn write_retest_refresh_cycle_status_output(
@@ -1505,10 +1493,46 @@ async fn write_retest_refresh_cycle_status_output(
     status: &serde_json::Value,
     output_partition_at_ms: i64,
 ) -> AppResult<Vec<String>> {
+    write_retest_refresh_cycle_checkpoint_output(
+        args,
+        status,
+        output_partition_at_ms,
+        RetestRefreshCheckpointKind::Status,
+    )
+    .await
+}
+
+enum RetestRefreshCheckpointKind {
+    Plan,
+    Status,
+}
+
+impl RetestRefreshCheckpointKind {
+    fn local_filename(&self) -> &'static str {
+        match self {
+            Self::Plan => "retest-horizon-plan.json",
+            Self::Status => "retest-horizon-status.json",
+        }
+    }
+
+    fn s3_prefix(&self) -> &'static str {
+        match self {
+            Self::Plan => "retest-horizon-plan/schema=research_retest_horizon_plan_v1",
+            Self::Status => "retest-horizon-status/schema=research_horizon_status_checkpoint_v1",
+        }
+    }
+}
+
+async fn write_retest_refresh_cycle_checkpoint_output(
+    args: &Args,
+    value: &serde_json::Value,
+    output_partition_at_ms: i64,
+    kind: RetestRefreshCheckpointKind,
+) -> AppResult<Vec<String>> {
     if let Some(output_dir) = args.output_dir.as_deref() {
-        let path = output_dir.join("retest-horizon-status.json");
+        let path = output_dir.join(kind.local_filename());
         return Ok(vec![
-            write_pretty_json_file(&path, status)?.display().to_string(),
+            write_pretty_json_file(&path, value)?.display().to_string(),
         ]);
     }
     let Some(bucket) = args.output_s3_bucket.as_deref() else {
@@ -1516,14 +1540,22 @@ async fn write_retest_refresh_cycle_status_output(
             "--run-retest-refresh-cycle requires --output-dir or --output-s3-bucket",
         ));
     };
-    write_retest_horizon_status_to_s3(
-        bucket,
-        "retest-horizon-status/schema=research_horizon_status_checkpoint_v1",
-        status,
-        output_partition_at_ms,
-    )
-    .await
-    .map(|uri| vec![uri])
+    let uri = match kind {
+        RetestRefreshCheckpointKind::Plan => {
+            write_retest_horizon_plan_to_s3(bucket, kind.s3_prefix(), value, output_partition_at_ms)
+                .await?
+        }
+        RetestRefreshCheckpointKind::Status => {
+            write_retest_horizon_status_to_s3(
+                bucket,
+                kind.s3_prefix(),
+                value,
+                output_partition_at_ms,
+            )
+            .await?
+        }
+    };
+    Ok(vec![uri])
 }
 
 async fn write_retest_refresh_cycle_focused_manifest_output(
