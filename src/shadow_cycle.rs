@@ -169,6 +169,22 @@ pub fn build_shadow_cycle_decision(
     }
 }
 
+pub fn shadow_sample_deficit_lifecycle_keys(
+    shadow_runs: &[ShadowValidationRun],
+    latest_l1_as_of_ms: Option<i64>,
+) -> Vec<String> {
+    summarize_shadow_runs(shadow_runs, latest_l1_as_of_ms)
+        .candidates
+        .into_iter()
+        .filter_map(|(candidate_lifecycle_key, state)| {
+            (state.observed_count > 0
+                && state.pending_target_count == 0
+                && state.sample_deficit() > 0)
+                .then_some(candidate_lifecycle_key)
+        })
+        .collect()
+}
+
 fn summarize_shadow_runs(
     shadow_runs: &[ShadowValidationRun],
     latest_l1_as_of_ms: Option<i64>,
@@ -374,9 +390,9 @@ fn validate_scheduler_action(decision: &ShadowCycleDecision) -> AppResult<()> {
                 "focused shadow sample accumulation decisions must include focused_research_manifest_file",
             ));
         };
-        if !manifest_file.starts_with('/') {
+        if !manifest_file.starts_with('/') && !manifest_file.starts_with("s3://") {
             return Err(AppError::validation(
-                "focused_research_manifest_file must be an absolute local path",
+                "focused_research_manifest_file must be an absolute local path or s3:// URI",
             ));
         }
         if decision.run_not_before_ms.is_some() {
@@ -695,6 +711,23 @@ mod tests {
         assert_eq!(decision.run_not_before_ms, None);
         assert_eq!(decision.shadow_sample_state.total_sample_deficit, 29);
         validate_shadow_cycle_decision(&decision).expect("generated hold decision validates");
+    }
+
+    #[test]
+    fn exposes_shadow_sample_deficit_lifecycle_keys_after_target_materializes() {
+        let decision_available_ms = 1_780_000_000_000;
+        let target_ms = decision_available_ms + i64::from(TARGET_HOURS) * MS_PER_HOUR;
+        let pending_target_ms = target_ms - 1;
+        let runs = vec![
+            shadow_run("shadow_a", "cand_a", "XAUT", decision_available_ms, 30),
+            shadow_run("shadow_b", "cand_b", "CHIP", decision_available_ms + 1, 30),
+        ];
+
+        assert!(shadow_sample_deficit_lifecycle_keys(&runs, Some(pending_target_ms)).is_empty());
+        assert_eq!(
+            shadow_sample_deficit_lifecycle_keys(&runs, Some(target_ms)),
+            vec!["cand_a".to_owned()]
+        );
     }
 
     fn shadow_run(

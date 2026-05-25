@@ -29,7 +29,8 @@ use crate::retest_status::{
     RetestHorizonStatusBuildOptions, build_retest_horizon_status, read_retest_horizon_plan,
 };
 use crate::shadow_cycle::{
-    build_shadow_cycle_decision, read_shadow_cycle_decision, validate_shadow_cycle_decision,
+    build_shadow_cycle_decision, read_shadow_cycle_decision, shadow_sample_deficit_lifecycle_keys,
+    validate_shadow_cycle_decision,
 };
 use crate::storage::{
     discover_latest_market_feature_delta_keys_from_s3,
@@ -37,8 +38,9 @@ use crate::storage::{
     discover_latest_symbol_universe_snapshot_end_ms_from_s3,
     discover_replay_run_index_keys_from_s3, discover_shadow_validation_run_keys_from_s3,
     read_candidate_bundles_from_s3, read_latest_retest_cycle_source_state_from_s3,
-    read_market_feature_deltas_from_s3, read_market_regime_contexts_from_s3,
-    read_oss_adapter_runs_from_s3, read_replay_run_index_records_from_s3, read_replay_runs_from_s3,
+    read_latest_retest_horizon_status_from_s3, read_market_feature_deltas_from_s3,
+    read_market_regime_contexts_from_s3, read_oss_adapter_runs_from_s3,
+    read_replay_run_index_records_from_s3, read_replay_runs_from_s3,
     read_research_input_manifest_from_s3, read_research_run_report_from_s3,
     read_retest_horizon_plan_from_s3, read_retest_horizon_status_from_s3,
     read_shadow_validation_runs_from_s3, write_research_input_manifest_to_exact_s3_key_if_absent,
@@ -1300,6 +1302,7 @@ async fn run_retest_refresh_cycle_mode(args: &Args) -> AppResult<RunSummary> {
                 research_packet_id: focused_retest_packet_id(args, output_partition_at_ms),
                 run_scope: focused_retest_run_scope(args),
                 next_actions: args.focused_retest_next_actions.clone(),
+                candidate_lifecycle_key_filter: Vec::new(),
                 historical_replay_index_ref_mode: args
                     .focused_retest_historical_replay_index_ref_mode,
                 s3_write: args.output_s3_bucket.is_some(),
@@ -1485,6 +1488,7 @@ async fn build_focused_retest_manifest_from_status(
             research_packet_id: focused_retest_packet_id(args, output_partition_at_ms),
             run_scope: focused_retest_run_scope(args),
             next_actions: args.focused_retest_next_actions.clone(),
+            candidate_lifecycle_key_filter: Vec::new(),
             historical_replay_index_ref_mode: args.focused_retest_historical_replay_index_ref_mode,
             s3_write: args.output_s3_bucket.is_some(),
         },
@@ -2007,10 +2011,54 @@ async fn run_shadow_cycle_from_latest_state_mode(args: &Args) -> AppResult<RunSu
         read_shadow_validation_runs_from_s3(output_bucket, &shadow_keys).await?
     };
     let latest_l1_as_of_ms = shadow_cycle_latest_l1_as_of_ms(args).await?;
-    let decision =
+    let mut decision =
         build_shadow_cycle_decision(&shadow_runs, latest_l1_as_of_ms, output_partition_at_ms);
-    let output_files =
-        write_shadow_cycle_decision_outputs(args, &decision, output_partition_at_ms).await?;
+    let mut focused_retest_manifests_created = 0usize;
+    let mut focused_retest_horizon_count = 0usize;
+    let mut focused_retest_candidate_bundle_refs = 0usize;
+    let mut output_files = Vec::new();
+
+    if decision.scheduler_action == ShadowCycleSchedulerAction::HoldForOperatorReview
+        && let Some(dispatch) = try_build_shadow_accumulation_manifest_from_latest_state(
+            args,
+            &shadow_runs,
+            latest_l1_as_of_ms,
+            output_partition_at_ms,
+        )
+        .await?
+    {
+        if dispatch.created {
+            focused_retest_manifests_created = 1;
+        }
+        focused_retest_horizon_count = dispatch.focused_horizon_count;
+        focused_retest_candidate_bundle_refs = dispatch.focused_candidate_bundle_refs;
+        output_files.push(dispatch.manifest_uri.clone());
+        decision.scheduler_action =
+            ShadowCycleSchedulerAction::RunFocusedShadowSampleAccumulationResearch;
+        let latest_l1_part = latest_l1_as_of_ms
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "none".to_owned());
+        let deficit_lifecycle_key_part = dispatch.deficit_lifecycle_keys.join("|");
+        decision.decision_id = stable_id(
+            "shadow_cycle_decision",
+            &[
+                "ACCUMULATE_SHADOW_SAMPLES_BEFORE_COMPLETION",
+                latest_l1_part.as_str(),
+                dispatch.manifest_uri.as_str(),
+                deficit_lifecycle_key_part.as_str(),
+            ],
+        );
+        decision.focused_research_manifest_file = Some(dispatch.manifest_uri);
+        decision.safe_next_actions = vec![
+            "run_focused_shadow_sample_accumulation_research".to_owned(),
+            "keep_shadow_status_pending_until_completion_evidence_exists".to_owned(),
+        ];
+    }
+    validate_shadow_cycle_decision(&decision)?;
+    let output_files = append_output_files(
+        output_files,
+        write_shadow_cycle_decision_outputs(args, &decision, output_partition_at_ms).await?,
+    );
 
     Ok(RunSummary {
         shadow_cycle_decisions_validated: 1,
@@ -2018,10 +2066,129 @@ async fn run_shadow_cycle_from_latest_state_mode(args: &Args) -> AppResult<RunSu
         shadow_cycle_scheduler_action: Some(decision.scheduler_action),
         shadow_cycle_run_not_before_ms: decision.run_not_before_ms,
         shadow_cycle_focused_research_manifest_file: decision.focused_research_manifest_file,
+        focused_retest_manifests_created,
+        focused_retest_horizon_count,
+        focused_retest_candidate_bundle_refs,
         shadow_validation_runs_loaded: shadow_runs.len(),
         output_files,
         ..RunSummary::default()
     })
+}
+
+#[derive(Debug)]
+struct ShadowAccumulationDispatch {
+    manifest_uri: String,
+    created: bool,
+    focused_horizon_count: usize,
+    focused_candidate_bundle_refs: usize,
+    deficit_lifecycle_keys: Vec<String>,
+}
+
+async fn try_build_shadow_accumulation_manifest_from_latest_state(
+    args: &Args,
+    shadow_runs: &[ShadowValidationRun],
+    latest_l1_as_of_ms: Option<i64>,
+    output_partition_at_ms: i64,
+) -> AppResult<Option<ShadowAccumulationDispatch>> {
+    let deficit_lifecycle_keys =
+        shadow_sample_deficit_lifecycle_keys(shadow_runs, latest_l1_as_of_ms);
+    if deficit_lifecycle_keys.is_empty() {
+        return Ok(None);
+    }
+    let Some(bucket) = args.output_s3_bucket.as_deref() else {
+        return Ok(None);
+    };
+    let state = match read_latest_retest_cycle_source_state_from_s3(bucket, "").await {
+        Ok(state) => state,
+        Err(AppError::AwsNotFound(_)) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let status = match read_latest_retest_horizon_status_from_s3(bucket, "").await {
+        Ok(status) => status,
+        Err(AppError::AwsNotFound(_)) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let source_manifest = read_research_input_manifest_from_s3(
+        &state.source_manifest_s3_bucket,
+        &state.source_manifest_s3_key,
+    )
+    .await?;
+    validate_input_manifest(Some(&source_manifest))?;
+
+    let mut build = match build_focused_retest_manifest(
+        &status,
+        &source_manifest,
+        &FocusedRetestBuildOptions {
+            generated_at_ms: output_partition_at_ms,
+            research_packet_id: "research_shadow_accumulation_pending".to_owned(),
+            run_scope: "shadow_sample_accumulation_local_validation".to_owned(),
+            next_actions: args.focused_retest_next_actions.clone(),
+            candidate_lifecycle_key_filter: deficit_lifecycle_keys.clone(),
+            historical_replay_index_ref_mode: args.focused_retest_historical_replay_index_ref_mode,
+            s3_write: true,
+        },
+    ) {
+        Ok(build) => build,
+        Err(AppError::Validation(message))
+            if message.contains("selected zero candidate bundle refs") =>
+        {
+            return Ok(None);
+        }
+        Err(error) => return Err(error),
+    };
+    let packet_id = shadow_accumulation_dispatch_packet_id(
+        &state,
+        latest_l1_as_of_ms,
+        &deficit_lifecycle_keys,
+        &build,
+    )?;
+    build.manifest.research_packet_id = Some(packet_id.clone());
+    let key = focused_retest_dispatch_manifest_s3_key(&packet_id)?;
+    let write_result =
+        write_research_input_manifest_to_exact_s3_key_if_absent(bucket, &key, &build.manifest)
+            .await?;
+    let created = write_result.is_some();
+    let manifest_uri = write_result.unwrap_or_else(|| format!("s3://{bucket}/{key}"));
+
+    Ok(Some(ShadowAccumulationDispatch {
+        manifest_uri,
+        created,
+        focused_horizon_count: build.summary.focused.focus_horizon_count,
+        focused_candidate_bundle_refs: build.summary.focused.selected_candidate_bundle_ref_count,
+        deficit_lifecycle_keys,
+    }))
+}
+
+fn append_output_files(mut left: Vec<String>, right: Vec<String>) -> Vec<String> {
+    left.extend(right);
+    left
+}
+
+fn shadow_accumulation_dispatch_packet_id(
+    state: &RetestCycleSourceState,
+    latest_l1_as_of_ms: Option<i64>,
+    deficit_lifecycle_keys: &[String],
+    build: &FocusedRetestManifestBuild,
+) -> AppResult<String> {
+    let latest_l1_part = latest_l1_as_of_ms
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "none".to_owned());
+    let focus_rows = serde_json::to_string(&build.summary.focused.rows)?;
+    let candidate_refs = serde_json::to_string(&build.manifest.candidate_bundle_refs)?;
+    let historical_index_refs =
+        serde_json::to_string(&build.manifest.historical_replay_run_index_refs)?;
+    let deficit_keys = serde_json::to_string(deficit_lifecycle_keys)?;
+    let parts = [
+        "research_shadow_accumulation_dispatch_v1",
+        state.source_manifest_s3_key.as_str(),
+        state.source_research_report_s3_key.as_str(),
+        latest_l1_part.as_str(),
+        deficit_keys.as_str(),
+        focus_rows.as_str(),
+        candidate_refs.as_str(),
+        historical_index_refs.as_str(),
+    ];
+    Ok(stable_id("research_shadow_accumulation", &parts))
 }
 
 async fn load_input_manifest(args: &Args) -> AppResult<Option<ResearchInputManifest>> {

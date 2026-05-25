@@ -96,6 +96,42 @@ pub async fn read_retest_horizon_status_from_s3(
     read_retest_horizon_status_from_bytes(&format!("s3://{bucket}/{key}"), bytes.as_ref())
 }
 
+pub async fn read_latest_retest_horizon_status_from_s3(
+    bucket: &str,
+    prefix: &str,
+) -> AppResult<serde_json::Value> {
+    if bucket.trim().is_empty() {
+        return Err(AppError::config(
+            "retest horizon status S3 bucket must not be empty",
+        ));
+    }
+    let client = s3_client().await?;
+    let prefix = normalize_prefix(if prefix.trim().is_empty() {
+        "retest-horizon-status/schema=research_horizon_status_checkpoint_v1"
+    } else {
+        prefix
+    });
+    if !prefix.starts_with("retest-horizon-status/") {
+        return Err(AppError::config(
+            "retest horizon status S3 prefix must start with retest-horizon-status/",
+        ));
+    }
+    let keys = list_payload_objects_with_prefix(
+        &client,
+        bucket,
+        &prefix,
+        "/retest-horizon-status.json",
+        1_000,
+    )
+    .await
+    .map(|objects| select_latest_payload_keys(objects, 1))?;
+    let key = keys
+        .first()
+        .ok_or_else(|| AppError::AwsNotFound(format!("s3://{bucket}/{prefix}")))?;
+    let bytes = get_object_bytes(&client, bucket, key).await?;
+    read_retest_horizon_status_from_bytes(&format!("s3://{bucket}/{key}"), bytes.as_ref())
+}
+
 pub async fn read_retest_horizon_plan_from_s3(
     bucket: &str,
     key: &str,

@@ -1279,6 +1279,7 @@ fn focused_retest_dispatch_packet_id_is_stable_for_same_refresh_inputs() {
             research_packet_id: "research_focus_7400000".to_owned(),
             run_scope: "focused_retest_local_validation".to_owned(),
             next_actions: crate::focused_retest::default_focused_retest_actions(),
+            candidate_lifecycle_key_filter: Vec::new(),
             historical_replay_index_ref_mode:
                 crate::focused_retest::HistoricalReplayIndexRefMode::Auto,
             s3_write: true,
@@ -1293,6 +1294,7 @@ fn focused_retest_dispatch_packet_id_is_stable_for_same_refresh_inputs() {
             research_packet_id: "research_focus_7500000".to_owned(),
             run_scope: "focused_retest_local_validation".to_owned(),
             next_actions: crate::focused_retest::default_focused_retest_actions(),
+            candidate_lifecycle_key_filter: Vec::new(),
             historical_replay_index_ref_mode:
                 crate::focused_retest::HistoricalReplayIndexRefMode::Auto,
             s3_write: true,

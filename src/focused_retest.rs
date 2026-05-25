@@ -57,6 +57,7 @@ pub struct FocusedRetestBuildOptions {
     pub research_packet_id: String,
     pub run_scope: String,
     pub next_actions: Vec<String>,
+    pub candidate_lifecycle_key_filter: Vec<String>,
     pub historical_replay_index_ref_mode: HistoricalReplayIndexRefMode,
     pub s3_write: bool,
 }
@@ -181,7 +182,11 @@ pub fn build_focused_retest_manifest(
         ));
     }
 
-    let rows = focus_rows(status, &options.next_actions)?;
+    let rows = focus_rows(
+        status,
+        &options.next_actions,
+        &options.candidate_lifecycle_key_filter,
+    )?;
     let focus_candidate_ids = unique_sorted(rows.iter().map(|row| row.candidate_id.as_str()));
     let source_refs = source_candidate_refs(source_manifest);
     let selected_refs = selected_candidate_refs(&source_refs, &focus_candidate_ids);
@@ -278,8 +283,16 @@ pub fn build_focused_retest_manifest(
     Ok(FocusedRetestManifestBuild { manifest, summary })
 }
 
-fn focus_rows(status: &Value, actions: &[String]) -> AppResult<Vec<FocusedRetestRow>> {
+fn focus_rows(
+    status: &Value,
+    actions: &[String],
+    candidate_lifecycle_key_filter: &[String],
+) -> AppResult<Vec<FocusedRetestRow>> {
     let action_set = actions.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    let lifecycle_filter = candidate_lifecycle_key_filter
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
     let mut rows = Vec::new();
     let Some(symbols) = status.get("by_symbol").and_then(Value::as_array) else {
         return Ok(rows);
@@ -293,6 +306,12 @@ fn focus_rows(status: &Value, actions: &[String]) -> AppResult<Vec<FocusedRetest
             let Some(candidate_id) = string_field(candidate, "candidate_id") else {
                 continue;
             };
+            let candidate_lifecycle_key = string_field(candidate, "candidate_lifecycle_key");
+            if !lifecycle_filter.is_empty()
+                && !candidate_lifecycle_key.is_some_and(|key| lifecycle_filter.contains(key))
+            {
+                continue;
+            }
             let Some(horizons) = candidate.get("horizons").and_then(Value::as_array) else {
                 continue;
             };
@@ -305,8 +324,7 @@ fn focus_rows(status: &Value, actions: &[String]) -> AppResult<Vec<FocusedRetest
                 }
                 rows.push(FocusedRetestRow {
                     candidate_id: candidate_id.to_owned(),
-                    candidate_lifecycle_key: string_field(candidate, "candidate_lifecycle_key")
-                        .map(ToOwned::to_owned),
+                    candidate_lifecycle_key: candidate_lifecycle_key.map(ToOwned::to_owned),
                     symbol: symbol.to_owned(),
                     symbols: string_array_field(horizon, "symbols"),
                     hypothesis_type: string_field(candidate, "hypothesis_type")
@@ -487,6 +505,7 @@ mod tests {
                 research_packet_id: "research_focus_test".to_owned(),
                 run_scope: "focused_retest_local_validation".to_owned(),
                 next_actions: vec!["accumulate_completed_native_replay_samples".to_owned()],
+                candidate_lifecycle_key_filter: Vec::new(),
                 historical_replay_index_ref_mode: HistoricalReplayIndexRefMode::Auto,
                 s3_write: false,
             },
@@ -526,6 +545,7 @@ mod tests {
                 research_packet_id: "research_focus_test".to_owned(),
                 run_scope: "focused_retest_local_validation".to_owned(),
                 next_actions: vec!["run_research_replay_for_horizon".to_owned()],
+                candidate_lifecycle_key_filter: Vec::new(),
                 historical_replay_index_ref_mode: HistoricalReplayIndexRefMode::Auto,
                 s3_write: false,
             },
@@ -537,6 +557,35 @@ mod tests {
                 .to_string()
                 .contains("selected zero candidate bundle refs")
         );
+    }
+
+    #[test]
+    fn filters_focused_manifest_by_candidate_lifecycle_key() {
+        let source_manifest = source_manifest();
+        let status = status_with_focus_rows();
+        let build = build_focused_retest_manifest(
+            &status,
+            &source_manifest,
+            &FocusedRetestBuildOptions {
+                generated_at_ms: 1_779_719_361_452,
+                research_packet_id: "research_focus_test".to_owned(),
+                run_scope: "shadow_sample_accumulation_local_validation".to_owned(),
+                next_actions: vec!["accumulate_completed_native_replay_samples".to_owned()],
+                candidate_lifecycle_key_filter: vec!["cand_a:v1".to_owned()],
+                historical_replay_index_ref_mode: HistoricalReplayIndexRefMode::Auto,
+                s3_write: false,
+            },
+        )
+        .expect("filtered focused manifest builds");
+
+        assert_eq!(build.summary.focused.focus_candidate_count, 1);
+        assert_eq!(
+            build.summary.focused.rows[0]
+                .candidate_lifecycle_key
+                .as_deref(),
+            Some("cand_a:v1")
+        );
+        assert_eq!(build.manifest.candidate_bundle_refs.len(), 1);
     }
 
     fn source_manifest() -> ResearchInputManifest {
