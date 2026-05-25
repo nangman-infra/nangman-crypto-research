@@ -477,6 +477,20 @@ research/retest cycle. When `run_now_replay_ready` is false and
 `run_research_after_l1_as_of_ms` is set, an external scheduler should wait until
 Market-L1 has advanced to that as-of boundary before dispatching another
 focused research run.
+The app can validate this handoff without loading research inputs or producing
+research outputs:
+
+```bash
+cd /Volumes/WD/Developments/nangman-crypto/apps/research-app
+
+cargo run -- \
+  --retest-horizon-status-file /tmp/nangman-crypto/research-current-approved-batch/<run-id>/retest-horizon-status.json
+```
+
+This mode validates that the checkpoint is local-summary only, does not enable
+live trading, preserves the shadow/paper/live blocked actions, and returns the
+next scheduler action. It does not upload S3 outputs, start ECS tasks, switch
+the dispatcher, or create shadow/paper/live artifacts.
 When the optional batch driver summary is absent, the checkpoint derives
 `stage_state.research_replay_completed` from the retest horizon plan: every
 candidate in the plan must have at least one replay-backed horizon. This keeps

@@ -42,6 +42,7 @@ fn default_args() -> Args {
         shadow_cycle_decision_file: None,
         shadow_cycle_decision_output_file: None,
         shadow_cycle_latest_l1_as_of_ms: None,
+        retest_horizon_status_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
         input_manifest_s3_key: None,
@@ -349,6 +350,45 @@ fn shadow_cycle_wait_decision_json() -> Value {
     })
 }
 
+fn retest_horizon_wait_status_json() -> Value {
+    json!({
+        "schema_version": "research_horizon_status_checkpoint_v1",
+        "generated_at": "2026-05-25T12:09:40Z",
+        "safety": {
+            "s3_write": false,
+            "ecs_task_started": false,
+            "dispatcher_mode_changed": false,
+            "local_summary_only": true,
+            "shadow_paper_live_enabled": false
+        },
+        "stage_state": {
+            "candidate_generated": true,
+            "research_replay_completed": true,
+            "promotion_passed": false,
+            "shadow_created": false,
+            "paper_created": false,
+            "live_enabled": false
+        },
+        "next_decision": {
+            "verdict": "WAIT_FOR_MARKET_L1_HORIZON",
+            "scheduler_hint": {
+                "latest_l1_as_of_ms": 1_779_710_400_000_i64,
+                "latest_l1_as_of_iso": "2026-05-25T12:00:00Z",
+                "run_research_after_l1_as_of_ms": 1_779_719_361_452_i64,
+                "run_research_after_l1_as_of_iso": "2026-05-25T14:29:21Z",
+                "wait_deficit_ms": 8_961_452,
+                "run_now_replay_ready": false,
+                "promotion_ready_for_review": false
+            },
+            "blocked_actions": [
+                "do_not_create_shadow_without_promotion",
+                "do_not_create_paper_without_passed_shadow",
+                "do_not_enable_live_from_research_batch"
+            ]
+        }
+    })
+}
+
 fn shadow_validation_run_json(
     shadow_validation_run_id: &str,
     candidate_lifecycle_key: &str,
@@ -414,6 +454,19 @@ fn parse_args_requires_absolute_shadow_cycle_decision_path() {
     let error = parse_args(
         [
             "--shadow-cycle-decision-file".to_owned(),
+            "relative.json".to_owned(),
+        ]
+        .into_iter(),
+    )
+    .expect_err("relative path should fail");
+    assert!(error.to_string().contains("absolute path"));
+}
+
+#[test]
+fn parse_args_requires_absolute_retest_horizon_status_path() {
+    let error = parse_args(
+        [
+            "--retest-horizon-status-file".to_owned(),
             "relative.json".to_owned(),
         ]
         .into_iter(),
@@ -728,6 +781,60 @@ async fn shadow_cycle_decision_file_rejects_order_execution_enabled() {
         .expect_err("unsafe shadow cycle decision is rejected");
 
     assert!(error.to_string().contains("paper/live/order execution"));
+}
+
+#[tokio::test]
+async fn retest_horizon_status_file_validates_without_research_inputs() {
+    let root = test_root("retest-status-cli");
+    let status_file = root.join("retest-horizon-status.json");
+    write_json(&status_file, &retest_horizon_wait_status_json());
+
+    let args = parse_args(
+        [
+            "--retest-horizon-status-file".to_owned(),
+            status_file.display().to_string(),
+        ]
+        .into_iter(),
+    )
+    .expect("status args parse")
+    .expect("status args returned");
+    let summary = run(args).await.expect("status validates");
+
+    assert_eq!(summary.retest_horizon_statuses_validated, 1);
+    assert_eq!(
+        summary.retest_cycle_scheduler_action,
+        Some("WAIT_UNTIL_MARKET_L1_HORIZON_MATERIALIZES".to_owned())
+    );
+    assert_eq!(
+        summary.retest_cycle_run_not_before_ms,
+        Some(1_779_719_361_452)
+    );
+    assert_eq!(summary.processed_bundles, 0);
+    assert!(summary.output_files.is_empty());
+}
+
+#[tokio::test]
+async fn retest_horizon_status_file_rejects_live_enabled() {
+    let root = test_root("retest-status-unsafe-cli");
+    let status_file = root.join("retest-horizon-status.json");
+    let mut status = retest_horizon_wait_status_json();
+    status["stage_state"]["live_enabled"] = json!(true);
+    write_json(&status_file, &status);
+
+    let args = parse_args(
+        [
+            "--retest-horizon-status-file".to_owned(),
+            status_file.display().to_string(),
+        ]
+        .into_iter(),
+    )
+    .expect("status args parse")
+    .expect("status args returned");
+    let error = run(args)
+        .await
+        .expect_err("unsafe retest status is rejected");
+
+    assert!(error.to_string().contains("live trading"));
 }
 
 #[tokio::test]

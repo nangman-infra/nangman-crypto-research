@@ -9,6 +9,9 @@ async fn main() {
         Ok(None) => {
             print_help();
             Ok(RunSummary {
+                retest_horizon_statuses_validated: 0,
+                retest_cycle_scheduler_action: None,
+                retest_cycle_run_not_before_ms: None,
                 shadow_cycle_decisions_validated: 0,
                 shadow_cycle_decisions_created: 0,
                 shadow_cycle_scheduler_action: None,
@@ -35,6 +38,7 @@ async fn main() {
     match result {
         Ok(summary) => {
             if summary.processed_bundles > 0
+                || summary.retest_horizon_statuses_validated > 0
                 || summary.shadow_cycle_decisions_validated > 0
                 || summary.shadow_cycle_decisions_created > 0
             {

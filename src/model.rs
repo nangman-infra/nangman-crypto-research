@@ -26,6 +26,7 @@ pub const PORTFOLIO_ALLOCATION_SNAPSHOT_SCHEMA_VERSION: &str = "portfolio_alloca
 pub const PORTFOLIO_RISK_REJECT_EVENT_SCHEMA_VERSION: &str = "portfolio_risk_reject_event_v1";
 pub const PORTFOLIO_REDUCE_ONLY_SIGNAL_SCHEMA_VERSION: &str = "portfolio_reduce_only_signal_v1";
 pub const SHADOW_CYCLE_DECISION_SCHEMA_VERSION: &str = "research_shadow_cycle_decision_v1";
+pub const RETEST_HORIZON_STATUS_SCHEMA_VERSION: &str = "research_horizon_status_checkpoint_v1";
 pub const HOLDING_POLICY_VERSION: &str = "crypto_intraday_holding_policy_v1_2026_05_12";
 pub const TARGET_MAX_HOLDING_HOURS: u32 = 24;
 pub const ABSOLUTE_MAX_HOLDING_HOURS: u32 = 72;

@@ -16,6 +16,7 @@ use crate::model::{
 use crate::paper::build_paper_artifacts;
 use crate::replay::{build_invalid_replay_run, run_native_replay};
 use crate::report::build_report;
+use crate::retest_cycle::{read_retest_horizon_status, validate_retest_horizon_status};
 use crate::shadow_cycle::{
     build_shadow_cycle_decision, read_shadow_cycle_decision, validate_shadow_cycle_decision,
 };
@@ -48,6 +49,7 @@ pub struct Args {
     pub shadow_cycle_decision_file: Option<PathBuf>,
     pub shadow_cycle_decision_output_file: Option<PathBuf>,
     pub shadow_cycle_latest_l1_as_of_ms: Option<i64>,
+    pub retest_horizon_status_file: Option<PathBuf>,
     pub input_manifest_file: Option<PathBuf>,
     pub input_manifest_s3_bucket: Option<String>,
     pub input_manifest_s3_key: Option<String>,
@@ -81,6 +83,12 @@ pub struct Args {
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct RunSummary {
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub retest_horizon_statuses_validated: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retest_cycle_scheduler_action: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retest_cycle_run_not_before_ms: Option<i64>,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub shadow_cycle_decisions_validated: usize,
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -122,6 +130,7 @@ where
         shadow_cycle_decision_output_file: env_string("RESEARCH_SHADOW_CYCLE_DECISION_OUTPUT_FILE")
             .map(PathBuf::from),
         shadow_cycle_latest_l1_as_of_ms,
+        retest_horizon_status_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: env_string("RESEARCH_INPUT_MANIFEST_S3_BUCKET"),
         input_manifest_s3_key: env_string("RESEARCH_INPUT_MANIFEST_S3_KEY"),
@@ -182,6 +191,12 @@ where
                 args.shadow_cycle_latest_l1_as_of_ms = Some(parse_non_negative_i64(
                     "--shadow-cycle-latest-l1-as-of-ms",
                     &raw,
+                )?);
+            }
+            "--retest-horizon-status-file" => {
+                args.retest_horizon_status_file = Some(absolute_path_arg(
+                    values.next(),
+                    "--retest-horizon-status-file requires an absolute path",
                 )?);
             }
             "--input-manifest-file" => {
@@ -374,6 +389,16 @@ where
             "use either --shadow-cycle-decision-file or --build-shadow-cycle-decision, not both",
         ));
     }
+    if args.retest_horizon_status_file.is_some()
+        && (args.shadow_cycle_decision_file.is_some() || args.build_shadow_cycle_decision)
+    {
+        return Err(AppError::config(
+            "use --retest-horizon-status-file separately from shadow cycle decision modes",
+        ));
+    }
+    if args.retest_horizon_status_file.is_some() {
+        return Ok(Some(args));
+    }
     if args.shadow_cycle_decision_file.is_some() {
         return Ok(Some(args));
     }
@@ -456,10 +481,40 @@ where
 }
 
 pub async fn run(args: Args) -> AppResult<RunSummary> {
+    if let Some(path) = args.retest_horizon_status_file.as_deref() {
+        let status = read_retest_horizon_status(path)?;
+        let validation = validate_retest_horizon_status(&status)?;
+        return Ok(RunSummary {
+            retest_horizon_statuses_validated: 1,
+            retest_cycle_scheduler_action: Some(validation.scheduler_action),
+            retest_cycle_run_not_before_ms: validation.run_not_before_ms,
+            shadow_cycle_decisions_validated: 0,
+            shadow_cycle_decisions_created: 0,
+            shadow_cycle_scheduler_action: None,
+            shadow_cycle_run_not_before_ms: None,
+            shadow_cycle_focused_research_manifest_file: None,
+            processed_bundles: 0,
+            replay_runs_created: 0,
+            historical_replay_runs_loaded: 0,
+            oss_adapter_runs_loaded: 0,
+            shadow_validation_runs_loaded: 0,
+            shadow_validation_runs_created: 0,
+            paper_trade_candidates_created: 0,
+            paper_trade_runs_created: 0,
+            paper_trade_summaries_created: 0,
+            paper_trade_marks_created: 0,
+            portfolio_risk_reject_events_created: 0,
+            portfolio_reduce_only_signals_created: 0,
+            output_files: Vec::new(),
+        });
+    }
     if let Some(path) = args.shadow_cycle_decision_file.as_deref() {
         let decision = read_shadow_cycle_decision(path)?;
         validate_shadow_cycle_decision(&decision)?;
         return Ok(RunSummary {
+            retest_horizon_statuses_validated: 0,
+            retest_cycle_scheduler_action: None,
+            retest_cycle_run_not_before_ms: None,
             shadow_cycle_decisions_validated: 1,
             shadow_cycle_decisions_created: 0,
             shadow_cycle_scheduler_action: Some(decision.scheduler_action),
@@ -616,6 +671,9 @@ pub async fn run(args: Args) -> AppResult<RunSummary> {
     };
 
     Ok(RunSummary {
+        retest_horizon_statuses_validated: 0,
+        retest_cycle_scheduler_action: None,
+        retest_cycle_run_not_before_ms: None,
         shadow_cycle_decisions_validated: 0,
         shadow_cycle_decisions_created: 0,
         shadow_cycle_scheduler_action: None,
@@ -659,6 +717,9 @@ async fn build_shadow_cycle_decision_mode(args: &Args) -> AppResult<RunSummary> 
         write_shadow_cycle_decision_outputs(args, &decision, output_partition_at_ms).await?;
 
     Ok(RunSummary {
+        retest_horizon_statuses_validated: 0,
+        retest_cycle_scheduler_action: None,
+        retest_cycle_run_not_before_ms: None,
         shadow_cycle_decisions_validated: 1,
         shadow_cycle_decisions_created: 1,
         shadow_cycle_scheduler_action: Some(decision.scheduler_action),
@@ -1747,6 +1808,9 @@ Batch research input can be declared with a manifest:
 
 Shadow cycle scheduler decisions can be validated without running research:
   --shadow-cycle-decision-file /tmp/nangman-crypto/research-current-approved-batch/<run-id>/shadow-cycle-decision.json
+
+Retest horizon scheduler handoff can be validated without running research:
+  --retest-horizon-status-file /tmp/nangman-crypto/research-current-approved-batch/<run-id>/retest-horizon-status.json
 
 Shadow cycle scheduler decisions can also be built inside the app from
 shadow_validation_run_v1 inputs:
