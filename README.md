@@ -223,6 +223,11 @@ RESEARCH_OUTPUT_S3_BUCKET=nangman-crypto-dev-research-<account-suffix>
 RESEARCH_OUTPUT_S3_PREFIX optional, default empty
 ```
 
+Runtime S3 clients use AWS S3 with IAM only. Custom S3-compatible endpoints and
+path-style endpoint mode are rejected, including `AWS_ENDPOINT_URL`,
+`AWS_ENDPOINT_URL_S3`, `AWS_S3_FORCE_PATH_STYLE`, and
+`AWS_USE_PATH_STYLE_ENDPOINT`.
+
 When `RESEARCH_HISTORICAL_REPLAY_RUN_INDEX_S3_PREFIX` is set, the app discovers
 the latest `replay-run-index/.../part-000001.jsonl` objects under that prefix
 and loads the referenced historical replay samples before running the aggregate

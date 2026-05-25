@@ -24,7 +24,7 @@ pub async fn read_candidate_bundles_from_s3(
     bucket: &str,
     key: &str,
 ) -> AppResult<Vec<IntelCandidateEvidenceBundle>> {
-    let client = s3_client().await;
+    let client = s3_client().await?;
     let bytes = get_object_bytes(&client, bucket, key).await?;
     read_candidate_bundles_from_bytes(&format!("s3://{bucket}/{key}"), bytes.as_ref())
 }
@@ -33,7 +33,7 @@ pub async fn read_research_input_manifest_from_s3(
     bucket: &str,
     key: &str,
 ) -> AppResult<ResearchInputManifest> {
-    let client = s3_client().await;
+    let client = s3_client().await?;
     let bytes = get_object_bytes(&client, bucket, key).await?;
     read_research_input_manifest_from_bytes(&format!("s3://{bucket}/{key}"), bytes.as_ref())
 }
@@ -43,7 +43,7 @@ pub async fn read_market_feature_deltas_from_s3(
     keys: &[String],
     symbols: &BTreeSet<String>,
 ) -> AppResult<Vec<MarketFeatureDelta>> {
-    let client = s3_client().await;
+    let client = s3_client().await?;
     let mut deltas = Vec::new();
     for key in keys {
         let bytes = match get_object_bytes(&client, bucket, key).await {
@@ -78,7 +78,7 @@ pub async fn read_market_regime_contexts_from_s3(
     bucket: &str,
     keys: &[String],
 ) -> AppResult<Vec<MarketRegimeContext>> {
-    let client = s3_client().await;
+    let client = s3_client().await?;
     let mut contexts = Vec::new();
     for key in keys {
         let bytes = match get_object_bytes(&client, bucket, key).await {
@@ -109,7 +109,7 @@ pub async fn discover_latest_market_regime_context_keys_from_s3(
 }
 
 pub async fn read_replay_runs_from_s3(bucket: &str, keys: &[String]) -> AppResult<Vec<ReplayRun>> {
-    let client = s3_client().await;
+    let client = s3_client().await?;
     let mut runs = Vec::new();
     for key in keys {
         let bytes = get_object_bytes(&client, bucket, key).await?;
@@ -125,7 +125,7 @@ pub async fn read_replay_run_index_records_from_s3(
     bucket: &str,
     keys: &[String],
 ) -> AppResult<Vec<ReplayRunIndexRecord>> {
-    let client = s3_client().await;
+    let client = s3_client().await?;
     let mut records = Vec::new();
     for key in keys {
         let bytes = get_object_bytes(&client, bucket, key).await?;
@@ -164,7 +164,7 @@ pub async fn discover_replay_run_index_keys_from_s3(
         ));
     }
 
-    let client = s3_client().await;
+    let client = s3_client().await?;
     let objects =
         list_payload_objects_with_prefix(&client, bucket, prefix, "/part-000001.jsonl", scan_limit)
             .await?;
@@ -175,7 +175,7 @@ pub async fn read_oss_adapter_runs_from_s3(
     bucket: &str,
     keys: &[String],
 ) -> AppResult<Vec<OssAdapterRun>> {
-    let client = s3_client().await;
+    let client = s3_client().await?;
     let mut runs = Vec::new();
     for key in keys {
         let bytes = get_object_bytes(&client, bucket, key).await?;
@@ -191,7 +191,7 @@ pub async fn read_shadow_validation_runs_from_s3(
     bucket: &str,
     keys: &[String],
 ) -> AppResult<Vec<ShadowValidationRun>> {
-    let client = s3_client().await;
+    let client = s3_client().await?;
     let mut runs = Vec::new();
     for key in keys {
         let bytes = get_object_bytes(&client, bucket, key).await?;
@@ -213,7 +213,7 @@ pub async fn write_research_outputs_to_s3(
             "research output S3 bucket must not be empty",
         ));
     }
-    let client = s3_client().await;
+    let client = s3_client().await?;
     let mut written = Vec::new();
     let report = artifacts.report;
     let dt = partition(artifacts.output_partition_at_ms)?;
@@ -430,7 +430,7 @@ async fn discover_latest_market_l1_keys_from_s3(
     if bucket.trim().is_empty() {
         return Err(AppError::config("market L1 S3 bucket must not be empty"));
     }
-    let client = s3_client().await;
+    let client = s3_client().await?;
     let mut keys = Vec::new();
     for window_start_ms in window_starts_ms {
         let prefix = format!("{family_prefix}/run_id=l1_{window_start_ms}_");
@@ -724,21 +724,36 @@ fn validate_s3_location(bucket: &str, key: &str, label: &str) -> AppResult<()> {
     Ok(())
 }
 
-async fn s3_client() -> Client {
+async fn s3_client() -> AppResult<Client> {
+    let endpoint = env_s3_endpoint();
+    let force_path_style =
+        env_bool("AWS_S3_FORCE_PATH_STYLE") || env_bool("AWS_USE_PATH_STYLE_ENDPOINT");
+    validate_s3_runtime_config(endpoint.as_deref(), force_path_style)?;
+
     let mut loader = aws_config::defaults(BehaviorVersion::latest());
     if let Some(region) = env_string("AWS_REGION").or_else(|| env_string("AWS_DEFAULT_REGION")) {
         loader = loader.region(Region::new(region));
     }
-    if let Some(endpoint) = env_s3_endpoint() {
-        loader = loader.endpoint_url(endpoint);
-    }
     let config = loader.load().await;
-    let s3_config = S3ConfigBuilder::from(&config)
-        .force_path_style(
-            env_bool("AWS_S3_FORCE_PATH_STYLE") || env_bool("AWS_USE_PATH_STYLE_ENDPOINT"),
-        )
-        .build();
-    Client::from_conf(s3_config)
+    let s3_config = S3ConfigBuilder::from(&config).build();
+    Ok(Client::from_conf(s3_config))
+}
+
+fn validate_s3_runtime_config(endpoint: Option<&str>, force_path_style: bool) -> AppResult<()> {
+    if endpoint
+        .map(|value| !value.trim().trim_end_matches('/').is_empty())
+        .unwrap_or(false)
+    {
+        return Err(AppError::config(
+            "custom S3 endpoints are unsupported; use AWS S3 with IAM",
+        ));
+    }
+    if force_path_style {
+        return Err(AppError::config(
+            "path-style S3 endpoints are unsupported; use AWS S3 with IAM",
+        ));
+    }
+    Ok(())
 }
 
 fn env_s3_endpoint() -> Option<String> {
@@ -916,6 +931,22 @@ mod tests {
         let error = AppError::Aws("AccessDenied".to_owned());
 
         assert!(!is_missing_market_artifact(&error));
+    }
+
+    #[test]
+    fn rejects_custom_s3_endpoint_config() {
+        let error = validate_s3_runtime_config(Some("https://s3.nangman.cloud"), false)
+            .expect_err("custom endpoints must be rejected");
+
+        assert!(error.to_string().contains("custom S3 endpoints"));
+    }
+
+    #[test]
+    fn rejects_path_style_s3_endpoint_mode() {
+        let error = validate_s3_runtime_config(None, true)
+            .expect_err("path-style endpoints must be rejected");
+
+        assert!(error.to_string().contains("path-style S3 endpoints"));
     }
 
     #[test]
