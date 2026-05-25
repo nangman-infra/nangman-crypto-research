@@ -88,6 +88,12 @@ jobs:
                 "quality_gate_status=\(.projectStatus.status)",
                 (.projectStatus.conditions[]? | "\(.metricKey)=\(.actualValue // "n/a") threshold=\(.errorThreshold // "n/a") comparator=\(.comparator // "n/a") status=\(.status)")
               '
+          curl -fsS -u "${SONAR_TOKEN}:" \
+            "${host}/api/issues/search?componentKeys=nangman-crypto-research&resolved=false&inNewCodePeriod=true&ps=20" \
+            | jq -r '
+                .issues[]? |
+                "issue rule=\(.rule) severity=\(.severity) type=\(.type) component=\(.component) line=\(.line // "n/a") message=\(.message)"
+              '
 
       - name: SonarQube Quality Gate
         uses: SonarSource/sonarqube-quality-gate-action@v1
