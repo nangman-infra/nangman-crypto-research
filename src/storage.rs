@@ -17,7 +17,6 @@ use crate::retest_cycle::read_retest_horizon_status_from_bytes;
 use crate::retest_status::read_retest_horizon_plan_from_bytes;
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::Client;
-use aws_sdk_s3::config::Builder as S3ConfigBuilder;
 use aws_sdk_s3::error::ProvideErrorMetadata;
 use aws_types::region::Region;
 use chrono::{DateTime, Datelike, Timelike, Utc};
@@ -1045,43 +1044,12 @@ fn validate_research_input_manifest_s3_key(key: &str) -> AppResult<()> {
 }
 
 async fn s3_client() -> AppResult<Client> {
-    let endpoint = env_s3_endpoint();
-    let force_path_style =
-        env_bool("AWS_S3_FORCE_PATH_STYLE") || env_bool("AWS_USE_PATH_STYLE_ENDPOINT");
-    validate_s3_runtime_config(endpoint.as_deref(), force_path_style)?;
-
     let mut loader = aws_config::defaults(BehaviorVersion::latest());
     if let Some(region) = env_string("AWS_REGION").or_else(|| env_string("AWS_DEFAULT_REGION")) {
         loader = loader.region(Region::new(region));
     }
     let config = loader.load().await;
-    let s3_config = S3ConfigBuilder::from(&config).build();
-    Ok(Client::from_conf(s3_config))
-}
-
-fn validate_s3_runtime_config(endpoint: Option<&str>, force_path_style: bool) -> AppResult<()> {
-    if endpoint
-        .map(|value| !value.trim().trim_end_matches('/').is_empty())
-        .unwrap_or(false)
-    {
-        return Err(AppError::config(
-            "custom S3 endpoints are unsupported; use AWS S3 with IAM",
-        ));
-    }
-    if force_path_style {
-        return Err(AppError::config(
-            "path-style S3 endpoints are unsupported; use AWS S3 with IAM",
-        ));
-    }
-    Ok(())
-}
-
-fn env_s3_endpoint() -> Option<String> {
-    env::var("AWS_ENDPOINT_URL_S3")
-        .ok()
-        .or_else(|| env::var("AWS_ENDPOINT_URL").ok())
-        .map(|value| value.trim().trim_end_matches('/').to_owned())
-        .filter(|value| !value.is_empty())
+    Ok(Client::new(&config))
 }
 
 fn env_string(name: &str) -> Option<String> {
@@ -1089,13 +1057,6 @@ fn env_string(name: &str) -> Option<String> {
         .ok()
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
-}
-
-fn env_bool(name: &str) -> bool {
-    env::var(name)
-        .ok()
-        .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
-        .unwrap_or(false)
 }
 
 async fn put_object_json<T>(client: &Client, bucket: &str, key: &str, value: &T) -> AppResult<()>
@@ -1289,22 +1250,6 @@ mod tests {
         let error = AppError::Aws("AccessDenied".to_owned());
 
         assert!(!is_missing_market_artifact(&error));
-    }
-
-    #[test]
-    fn rejects_custom_s3_endpoint_config() {
-        let error = validate_s3_runtime_config(Some("https://s3.nangman.cloud"), false)
-            .expect_err("custom endpoints must be rejected");
-
-        assert!(error.to_string().contains("custom S3 endpoints"));
-    }
-
-    #[test]
-    fn rejects_path_style_s3_endpoint_mode() {
-        let error = validate_s3_runtime_config(None, true)
-            .expect_err("path-style endpoints must be rejected");
-
-        assert!(error.to_string().contains("path-style S3 endpoints"));
     }
 
     #[test]
