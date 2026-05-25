@@ -36,6 +36,44 @@ fn output_file_containing(summary: &RunSummary, needle: &str) -> PathBuf {
         .unwrap_or_else(|| panic!("expected output file containing {needle}"))
 }
 
+fn default_args() -> Args {
+    Args {
+        build_shadow_cycle_decision: false,
+        shadow_cycle_decision_file: None,
+        shadow_cycle_decision_output_file: None,
+        shadow_cycle_latest_l1_as_of_ms: None,
+        input_manifest_file: None,
+        input_manifest_s3_bucket: None,
+        input_manifest_s3_key: None,
+        input_bundle_file: None,
+        input_bundle_s3_bucket: None,
+        input_bundle_s3_key: None,
+        market_feature_delta_file: None,
+        market_regime_context_file: None,
+        market_l1_s3_bucket: None,
+        market_feature_delta_s3_keys: Vec::new(),
+        market_regime_context_s3_keys: Vec::new(),
+        historical_replay_run_files: Vec::new(),
+        historical_replay_run_index_files: Vec::new(),
+        oss_adapter_run_files: Vec::new(),
+        shadow_validation_run_files: Vec::new(),
+        oss_adapter_run_s3_bucket: None,
+        oss_adapter_run_s3_keys: Vec::new(),
+        shadow_validation_run_s3_bucket: None,
+        shadow_validation_run_s3_keys: Vec::new(),
+        historical_replay_run_s3_bucket: None,
+        historical_replay_run_s3_keys: Vec::new(),
+        historical_replay_run_index_s3_bucket: None,
+        historical_replay_run_index_s3_keys: Vec::new(),
+        output_dir: None,
+        output_s3_bucket: None,
+        output_s3_prefix: None,
+        research_packet_id: "test_packet".to_owned(),
+        run_scope: "test_scope".to_owned(),
+        now_ms: None,
+    }
+}
+
 fn bundle_json() -> Value {
     json!({
         "candidate_id": "cand_001",
@@ -527,9 +565,6 @@ async fn valid_bundle_without_market_data_becomes_retest_report() {
     write_json(&input, &bundle_json());
 
     let summary = run(Args {
-        build_shadow_cycle_decision: false,
-        shadow_cycle_decision_output_file: None,
-        shadow_cycle_latest_l1_as_of_ms: None,
         shadow_cycle_decision_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
@@ -560,6 +595,7 @@ async fn valid_bundle_without_market_data_becomes_retest_report() {
         research_packet_id: "packet_test".to_owned(),
         run_scope: "test".to_owned(),
         now_ms: Some(1_800_000),
+        ..default_args()
     })
     .await
     .expect("run succeeds");
@@ -583,9 +619,6 @@ async fn horizon_over_72h_is_invalid_input() {
     write_json(&input, &bundle);
 
     let summary = run(Args {
-        build_shadow_cycle_decision: false,
-        shadow_cycle_decision_output_file: None,
-        shadow_cycle_latest_l1_as_of_ms: None,
         shadow_cycle_decision_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
@@ -616,6 +649,7 @@ async fn horizon_over_72h_is_invalid_input() {
         research_packet_id: "packet_test".to_owned(),
         run_scope: "test".to_owned(),
         now_ms: Some(1_800_000),
+        ..default_args()
     })
     .await
     .expect("run succeeds with invalid replay record");
@@ -636,9 +670,6 @@ async fn oss_adapter_prune_bias_blocks_candidate_even_when_native_retest() {
     write_json(&oss, &oss_adapter_run_json("cand_001:v1", "PRUNE_BIAS"));
 
     let summary = run(Args {
-        build_shadow_cycle_decision: false,
-        shadow_cycle_decision_output_file: None,
-        shadow_cycle_latest_l1_as_of_ms: None,
         shadow_cycle_decision_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
@@ -669,6 +700,7 @@ async fn oss_adapter_prune_bias_blocks_candidate_even_when_native_retest() {
         research_packet_id: "packet_test".to_owned(),
         run_scope: "test".to_owned(),
         now_ms: Some(1_800_000),
+        ..default_args()
     })
     .await
     .expect("run succeeds");
@@ -699,9 +731,6 @@ async fn oss_adapter_holding_violation_fails_before_report() {
     write_json(&oss, &adapter);
 
     let error = run(Args {
-        build_shadow_cycle_decision: false,
-        shadow_cycle_decision_output_file: None,
-        shadow_cycle_latest_l1_as_of_ms: None,
         shadow_cycle_decision_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
@@ -732,6 +761,7 @@ async fn oss_adapter_holding_violation_fails_before_report() {
         research_packet_id: "packet_test".to_owned(),
         run_scope: "test".to_owned(),
         now_ms: Some(1_800_000),
+        ..default_args()
     })
     .await
     .expect_err("holding horizon violation must fail");
@@ -768,9 +798,6 @@ async fn negative_market_replay_prunes_candidate() {
     );
 
     let summary = run(Args {
-        build_shadow_cycle_decision: false,
-        shadow_cycle_decision_output_file: None,
-        shadow_cycle_latest_l1_as_of_ms: None,
         shadow_cycle_decision_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
@@ -801,6 +828,7 @@ async fn negative_market_replay_prunes_candidate() {
         research_packet_id: "packet_test".to_owned(),
         run_scope: "test".to_owned(),
         now_ms: Some(1_800_000),
+        ..default_args()
     })
     .await
     .expect("run succeeds");
@@ -823,9 +851,6 @@ async fn partial_market_replay_window_stays_insufficient_until_horizon_materiali
     );
 
     let summary = run(Args {
-        build_shadow_cycle_decision: false,
-        shadow_cycle_decision_output_file: None,
-        shadow_cycle_latest_l1_as_of_ms: None,
         shadow_cycle_decision_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
@@ -856,6 +881,7 @@ async fn partial_market_replay_window_stays_insufficient_until_horizon_materiali
         research_packet_id: "packet_test".to_owned(),
         run_scope: "test".to_owned(),
         now_ms: Some(1_800_000),
+        ..default_args()
     })
     .await
     .expect("run succeeds");
@@ -902,9 +928,6 @@ async fn positive_single_replay_stays_retest_until_gate_evidence_exists() {
     );
 
     let summary = run(Args {
-        build_shadow_cycle_decision: false,
-        shadow_cycle_decision_output_file: None,
-        shadow_cycle_latest_l1_as_of_ms: None,
         shadow_cycle_decision_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
@@ -935,6 +958,7 @@ async fn positive_single_replay_stays_retest_until_gate_evidence_exists() {
         research_packet_id: "packet_test".to_owned(),
         run_scope: "test".to_owned(),
         now_ms: Some(1_800_000),
+        ..default_args()
     })
     .await
     .expect("run succeeds");
@@ -1036,9 +1060,6 @@ async fn aggregate_gate_accepts_materialized_liquidity_filter() {
     write_json(&regime, &Value::Array(regimes));
 
     let summary = run(Args {
-        build_shadow_cycle_decision: false,
-        shadow_cycle_decision_output_file: None,
-        shadow_cycle_latest_l1_as_of_ms: None,
         shadow_cycle_decision_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
@@ -1069,6 +1090,7 @@ async fn aggregate_gate_accepts_materialized_liquidity_filter() {
         research_packet_id: "packet_test".to_owned(),
         run_scope: "test".to_owned(),
         now_ms: Some(120_000_000),
+        ..default_args()
     })
     .await
     .expect("run succeeds");
@@ -1128,9 +1150,6 @@ async fn aggregate_gate_blocks_zero_volume_liquidity_filter() {
     );
 
     let summary = run(Args {
-        build_shadow_cycle_decision: false,
-        shadow_cycle_decision_output_file: None,
-        shadow_cycle_latest_l1_as_of_ms: None,
         shadow_cycle_decision_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
@@ -1161,6 +1180,7 @@ async fn aggregate_gate_blocks_zero_volume_liquidity_filter() {
         research_packet_id: "packet_test".to_owned(),
         run_scope: "test".to_owned(),
         now_ms: Some(120_000_000),
+        ..default_args()
     })
     .await
     .expect("run succeeds");
@@ -1230,9 +1250,6 @@ async fn aggregate_gate_promotes_only_to_shadow_when_enterprise_blockers_clear()
     write_json(&regime, &Value::Array(regimes));
 
     let summary = run(Args {
-        build_shadow_cycle_decision: false,
-        shadow_cycle_decision_output_file: None,
-        shadow_cycle_latest_l1_as_of_ms: None,
         shadow_cycle_decision_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
@@ -1263,6 +1280,7 @@ async fn aggregate_gate_promotes_only_to_shadow_when_enterprise_blockers_clear()
         research_packet_id: "packet_test".to_owned(),
         run_scope: "test".to_owned(),
         now_ms: Some(120_000_000),
+        ..default_args()
     })
     .await
     .expect("run succeeds");
@@ -1386,9 +1404,6 @@ async fn completed_shadow_validation_input_creates_paper_artifacts_without_live_
     write_json(&regime, &Value::Array(regimes));
 
     let shadow_summary = run(Args {
-        build_shadow_cycle_decision: false,
-        shadow_cycle_decision_output_file: None,
-        shadow_cycle_latest_l1_as_of_ms: None,
         shadow_cycle_decision_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
@@ -1419,6 +1434,7 @@ async fn completed_shadow_validation_input_creates_paper_artifacts_without_live_
         research_packet_id: "packet_test".to_owned(),
         run_scope: "test".to_owned(),
         now_ms: Some(120_000_000),
+        ..default_args()
     })
     .await
     .expect("shadow run succeeds");
@@ -1438,9 +1454,6 @@ async fn completed_shadow_validation_input_creates_paper_artifacts_without_live_
     write_json(&completed_shadow_file, &Value::Array(completed_shadow_runs));
 
     let summary = run(Args {
-        build_shadow_cycle_decision: false,
-        shadow_cycle_decision_output_file: None,
-        shadow_cycle_latest_l1_as_of_ms: None,
         shadow_cycle_decision_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
@@ -1471,6 +1484,7 @@ async fn completed_shadow_validation_input_creates_paper_artifacts_without_live_
         research_packet_id: "packet_test".to_owned(),
         run_scope: "test".to_owned(),
         now_ms: Some(120_000_000),
+        ..default_args()
     })
     .await
     .expect("paper run succeeds");
@@ -1583,9 +1597,6 @@ async fn portfolio_rejects_critical_event_symbol_and_emits_reduce_only() {
     write_json(&regime, &Value::Array(regimes));
 
     let summary = run(Args {
-        build_shadow_cycle_decision: false,
-        shadow_cycle_decision_output_file: None,
-        shadow_cycle_latest_l1_as_of_ms: None,
         shadow_cycle_decision_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
@@ -1616,6 +1627,7 @@ async fn portfolio_rejects_critical_event_symbol_and_emits_reduce_only() {
         research_packet_id: "packet_test".to_owned(),
         run_scope: "test".to_owned(),
         now_ms: Some(120_000_000),
+        ..default_args()
     })
     .await
     .expect("run succeeds");
@@ -1673,9 +1685,6 @@ async fn historical_replay_runs_are_loaded_into_decay_aware_aggregate() {
     write_json(&history_regime, &Value::Array(history_regimes));
 
     let history_summary = run(Args {
-        build_shadow_cycle_decision: false,
-        shadow_cycle_decision_output_file: None,
-        shadow_cycle_latest_l1_as_of_ms: None,
         shadow_cycle_decision_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
@@ -1706,6 +1715,7 @@ async fn historical_replay_runs_are_loaded_into_decay_aware_aggregate() {
         research_packet_id: "packet_test".to_owned(),
         run_scope: "test".to_owned(),
         now_ms: Some(120_000_000),
+        ..default_args()
     })
     .await
     .expect("history run succeeds");
@@ -1742,9 +1752,6 @@ async fn historical_replay_runs_are_loaded_into_decay_aware_aggregate() {
     );
 
     let summary = run(Args {
-        build_shadow_cycle_decision: false,
-        shadow_cycle_decision_output_file: None,
-        shadow_cycle_latest_l1_as_of_ms: None,
         shadow_cycle_decision_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
@@ -1775,6 +1782,7 @@ async fn historical_replay_runs_are_loaded_into_decay_aware_aggregate() {
         research_packet_id: "packet_test".to_owned(),
         run_scope: "test".to_owned(),
         now_ms: Some(124_000_000),
+        ..default_args()
     })
     .await
     .expect("current run succeeds");
@@ -1868,9 +1876,6 @@ async fn historical_replay_runs_are_filtered_to_current_aggregate_keys() {
     );
 
     let history_summary = run(Args {
-        build_shadow_cycle_decision: false,
-        shadow_cycle_decision_output_file: None,
-        shadow_cycle_latest_l1_as_of_ms: None,
         shadow_cycle_decision_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
@@ -1901,6 +1906,7 @@ async fn historical_replay_runs_are_filtered_to_current_aggregate_keys() {
         research_packet_id: "packet_test".to_owned(),
         run_scope: "test".to_owned(),
         now_ms: Some(120_000_000),
+        ..default_args()
     })
     .await
     .expect("history run succeeds");
@@ -1935,9 +1941,6 @@ async fn historical_replay_runs_are_filtered_to_current_aggregate_keys() {
     );
 
     let summary = run(Args {
-        build_shadow_cycle_decision: false,
-        shadow_cycle_decision_output_file: None,
-        shadow_cycle_latest_l1_as_of_ms: None,
         shadow_cycle_decision_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
@@ -1968,6 +1971,7 @@ async fn historical_replay_runs_are_filtered_to_current_aggregate_keys() {
         research_packet_id: "packet_test".to_owned(),
         run_scope: "test".to_owned(),
         now_ms: Some(124_000_000),
+        ..default_args()
     })
     .await
     .expect("current run succeeds");
@@ -2021,9 +2025,6 @@ async fn expired_historical_replay_runs_are_excluded_from_promotion_gate() {
     write_json(&history_regime, &Value::Array(history_regimes));
 
     let history_summary = run(Args {
-        build_shadow_cycle_decision: false,
-        shadow_cycle_decision_output_file: None,
-        shadow_cycle_latest_l1_as_of_ms: None,
         shadow_cycle_decision_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
@@ -2054,6 +2055,7 @@ async fn expired_historical_replay_runs_are_excluded_from_promotion_gate() {
         research_packet_id: "packet_test".to_owned(),
         run_scope: "test".to_owned(),
         now_ms: Some(120_000_000),
+        ..default_args()
     })
     .await
     .expect("history run succeeds");
@@ -2088,9 +2090,6 @@ async fn expired_historical_replay_runs_are_excluded_from_promotion_gate() {
     );
 
     let summary = run(Args {
-        build_shadow_cycle_decision: false,
-        shadow_cycle_decision_output_file: None,
-        shadow_cycle_latest_l1_as_of_ms: None,
         shadow_cycle_decision_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
@@ -2121,6 +2120,7 @@ async fn expired_historical_replay_runs_are_excluded_from_promotion_gate() {
         research_packet_id: "packet_test".to_owned(),
         run_scope: "test".to_owned(),
         now_ms: Some(current_window_end_ms + 100_000),
+        ..default_args()
     })
     .await
     .expect("current run succeeds");
@@ -2159,9 +2159,6 @@ async fn lookahead_mismatch_is_invalid_input() {
     write_json(&input, &bundle);
 
     let summary = run(Args {
-        build_shadow_cycle_decision: false,
-        shadow_cycle_decision_output_file: None,
-        shadow_cycle_latest_l1_as_of_ms: None,
         shadow_cycle_decision_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
@@ -2192,6 +2189,7 @@ async fn lookahead_mismatch_is_invalid_input() {
         research_packet_id: "packet_test".to_owned(),
         run_scope: "test".to_owned(),
         now_ms: Some(1_800_000),
+        ..default_args()
     })
     .await
     .expect("run succeeds with partial report");
@@ -2210,9 +2208,6 @@ async fn report_id_and_output_key_are_stable_without_now_ms() {
     write_json(&input, &bundle_json());
 
     let args = |output_dir: PathBuf| Args {
-        build_shadow_cycle_decision: false,
-        shadow_cycle_decision_output_file: None,
-        shadow_cycle_latest_l1_as_of_ms: None,
         shadow_cycle_decision_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
@@ -2243,6 +2238,7 @@ async fn report_id_and_output_key_are_stable_without_now_ms() {
         research_packet_id: "packet_test".to_owned(),
         run_scope: "test".to_owned(),
         now_ms: None,
+        ..default_args()
     };
 
     let summary_a = run(args(output_a.clone()))
@@ -2363,9 +2359,6 @@ async fn manifest_batch_input_processes_multiple_candidate_refs() {
     );
 
     let summary = run(Args {
-        build_shadow_cycle_decision: false,
-        shadow_cycle_decision_output_file: None,
-        shadow_cycle_latest_l1_as_of_ms: None,
         shadow_cycle_decision_file: None,
         input_manifest_file: Some(manifest),
         input_manifest_s3_bucket: None,
@@ -2396,6 +2389,7 @@ async fn manifest_batch_input_processes_multiple_candidate_refs() {
         research_packet_id: "cli_packet".to_owned(),
         run_scope: "cli_scope".to_owned(),
         now_ms: Some(7_300_000),
+        ..default_args()
     })
     .await
     .expect("manifest batch run succeeds");
@@ -2446,9 +2440,6 @@ async fn manifest_runtime_budget_blocks_oversized_batch() {
     );
 
     let error = run(Args {
-        build_shadow_cycle_decision: false,
-        shadow_cycle_decision_output_file: None,
-        shadow_cycle_latest_l1_as_of_ms: None,
         shadow_cycle_decision_file: None,
         input_manifest_file: Some(manifest),
         input_manifest_s3_bucket: None,
@@ -2479,6 +2470,7 @@ async fn manifest_runtime_budget_blocks_oversized_batch() {
         research_packet_id: "packet_test".to_owned(),
         run_scope: "test".to_owned(),
         now_ms: Some(7_300_000),
+        ..default_args()
     })
     .await
     .expect_err("oversized manifest is rejected");
@@ -2542,9 +2534,6 @@ async fn derives_market_l1_s3_keys_from_candidate_bundle() {
     let bundles =
         vec![serde_json::from_value(bundle).expect("candidate bundle test json matches model")];
     let args = Args {
-        build_shadow_cycle_decision: false,
-        shadow_cycle_decision_output_file: None,
-        shadow_cycle_latest_l1_as_of_ms: None,
         shadow_cycle_decision_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
@@ -2583,6 +2572,7 @@ async fn derives_market_l1_s3_keys_from_candidate_bundle() {
         research_packet_id: "packet_test".to_owned(),
         run_scope: "test".to_owned(),
         now_ms: Some(0),
+        ..default_args()
     };
 
     assert_eq!(
@@ -2658,9 +2648,6 @@ async fn market_s3_key_budget_is_enforced_before_reading_s3_objects() {
     let bundles =
         vec![serde_json::from_value(bundle).expect("candidate bundle test json matches model")];
     let args = Args {
-        build_shadow_cycle_decision: false,
-        shadow_cycle_decision_output_file: None,
-        shadow_cycle_latest_l1_as_of_ms: None,
         shadow_cycle_decision_file: None,
         input_manifest_file: None,
         input_manifest_s3_bucket: None,
@@ -2695,6 +2682,7 @@ async fn market_s3_key_budget_is_enforced_before_reading_s3_objects() {
         research_packet_id: "packet_test".to_owned(),
         run_scope: "test".to_owned(),
         now_ms: Some(0),
+        ..default_args()
     };
 
     let delta_error = load_market_deltas(&args, &bundles, None, 0)
