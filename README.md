@@ -444,6 +444,29 @@ scripts/summarize-retest-horizon-status.sh \
   /tmp/nangman-crypto/research-current-approved-batch/<run-id>/batch-driver-summary.json
 ```
 
+The same checkpoint builder is available inside `research-app`, which is the
+scheduler-friendly path because it removes the local shell/JQ dependency:
+
+```bash
+cargo run -- \
+  --build-retest-horizon-status \
+  --retest-horizon-plan-file /tmp/nangman-crypto/research-current-approved-batch/<run-id>/retest-horizon-plan.json \
+  --retest-horizon-status-output-file /tmp/nangman-crypto/research-current-approved-batch/<run-id>/retest-horizon-status.json
+```
+
+For ECS automation, read the plan from S3 and write the status under a
+non-dispatching `retest-horizon-status/` prefix. This status object is a
+checkpoint; it does not trigger research by itself:
+
+```bash
+cargo run -- \
+  --build-retest-horizon-status \
+  --retest-horizon-plan-s3-bucket nangman-crypto-dev-research-<account-suffix> \
+  --retest-horizon-plan-s3-key retest-horizon-plan/schema=research_retest_horizon_plan_v1/... \
+  --output-s3-bucket nangman-crypto-dev-research-<account-suffix> \
+  --output-s3-prefix retest-horizon-status/schema=research_horizon_status_checkpoint_v1
+```
+
 The checkpoint separates:
 
 ```text

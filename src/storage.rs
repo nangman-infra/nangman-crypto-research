@@ -13,6 +13,7 @@ use crate::model::{
     ShadowValidationRun,
 };
 use crate::retest_cycle::read_retest_horizon_status_from_bytes;
+use crate::retest_status::read_retest_horizon_plan_from_bytes;
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::Client;
 use aws_sdk_s3::config::Builder as S3ConfigBuilder;
@@ -47,6 +48,15 @@ pub async fn read_retest_horizon_status_from_s3(
     let client = s3_client().await?;
     let bytes = get_object_bytes(&client, bucket, key).await?;
     read_retest_horizon_status_from_bytes(&format!("s3://{bucket}/{key}"), bytes.as_ref())
+}
+
+pub async fn read_retest_horizon_plan_from_s3(
+    bucket: &str,
+    key: &str,
+) -> AppResult<serde_json::Value> {
+    let client = s3_client().await?;
+    let bytes = get_object_bytes(&client, bucket, key).await?;
+    read_retest_horizon_plan_from_bytes(&format!("s3://{bucket}/{key}"), bytes.as_ref())
 }
 
 pub async fn read_market_feature_deltas_from_s3(
@@ -488,6 +498,41 @@ pub async fn write_research_input_manifest_to_s3(
         dt.date, dt.hour
     );
     put_object_json(&client, bucket, &key, manifest).await?;
+    Ok(format!("s3://{bucket}/{key}"))
+}
+
+pub async fn write_retest_horizon_status_to_s3(
+    bucket: &str,
+    prefix: &str,
+    status: &serde_json::Value,
+    output_partition_at_ms: i64,
+) -> AppResult<String> {
+    if bucket.trim().is_empty() {
+        return Err(AppError::config(
+            "retest horizon status output S3 bucket must not be empty",
+        ));
+    }
+    let client = s3_client().await?;
+    let dt = partition(output_partition_at_ms)?;
+    let prefix = normalize_prefix(if prefix.trim().is_empty() {
+        "retest-horizon-status/schema=research_horizon_status_checkpoint_v1"
+    } else {
+        prefix
+    });
+    if !prefix.starts_with("retest-horizon-status/") {
+        return Err(AppError::config(
+            "retest horizon status S3 prefix must start with retest-horizon-status/",
+        ));
+    }
+    let generated_at_ms = status
+        .get("generated_at_ms")
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(output_partition_at_ms);
+    let key = format!(
+        "{prefix}dt={}/hour={:02}/generated_at_ms={generated_at_ms}/retest-horizon-status.json",
+        dt.date, dt.hour
+    );
+    put_object_json(&client, bucket, &key, status).await?;
     Ok(format!("s3://{bucket}/{key}"))
 }
 
