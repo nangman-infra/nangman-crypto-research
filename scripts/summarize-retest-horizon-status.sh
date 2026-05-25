@@ -72,7 +72,8 @@ jq \
       if . == "1h" then 1
       elif . == "4h" then 2
       elif . == "24h" or . == "1d" then 3
-      elif . == "7d" then 4
+      elif . == "72h" then 4
+      elif . == "7d" then 5
       else 99 end;
     def action_counts:
       sort_by(.next_action)

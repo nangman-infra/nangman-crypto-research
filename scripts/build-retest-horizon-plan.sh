@@ -125,6 +125,7 @@ jq \
       if $h == "1h" then 3600000
       elif $h == "4h" then 14400000
       elif $h == "24h" or $h == "1d" then 86400000
+      elif $h == "72h" then 259200000
       elif $h == "7d" then 604800000
       else null end;
 
