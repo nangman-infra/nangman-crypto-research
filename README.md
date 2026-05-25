@@ -425,6 +425,25 @@ cargo run -- \
   --output-s3-prefix retest-horizon-plan/schema=research_retest_horizon_plan_v1
 ```
 
+For the runtime loop, prefer `--run-retest-refresh-cycle`. It folds the planner,
+status checkpoint, and focused manifest builder into one app-native call. The
+mode writes fresh checkpoints under non-dispatching `retest-horizon-plan/` and
+`retest-horizon-status/` prefixes. It writes under `research-input-manifest/`
+only when the rebuilt status says `RUN_FOCUSED_RETEST_RESEARCH`; that S3 write
+wakes the existing S3 notification -> Lambda -> ECS research path. A WAIT status
+creates no dispatcher manifest.
+
+```bash
+cargo run -- \
+  --run-retest-refresh-cycle \
+  --input-manifest-s3-bucket nangman-crypto-dev-research-<account-suffix> \
+  --input-manifest-s3-key research-input-manifest/schema=research_input_manifest_v1/... \
+  --research-report-s3-bucket nangman-crypto-dev-research-<account-suffix> \
+  --research-report-s3-key research-run-report/schema=research_run_report_v1/.../report.json \
+  --market-l1-s3-bucket nangman-crypto-dev-market-ingest-l1-<account-suffix> \
+  --output-s3-bucket nangman-crypto-dev-research-<account-suffix>
+```
+
 The legacy shell planner remains useful for local diagnosis:
 
 ```bash
@@ -917,6 +936,11 @@ and writes no manifest. If the old WAIT status is already past its deadline, it
 returns `REFRESH_RETEST_HORIZON_STATUS_AFTER_WAIT_DEADLINE` instead of creating a
 stale S3 trigger; operators should refresh the horizon status from current
 Market-L1 evidence before dispatching research.
+
+When the caller can provide the original research manifest and research report,
+use `--run-retest-refresh-cycle` instead. It refreshes the Market-L1 watermark
+and status in the same process before deciding whether to write the dispatching
+focused manifest.
 
 ```bash
 cargo run -- \

@@ -61,6 +61,7 @@ const DEFAULT_HISTORICAL_REPLAY_RUN_INDEX_SCAN_LIMIT: usize = 1_000;
 pub struct Args {
     pub build_shadow_cycle_decision: bool,
     pub build_retest_horizon_plan: bool,
+    pub run_retest_refresh_cycle: bool,
     pub run_retest_cycle_scheduler: bool,
     pub build_retest_horizon_status: bool,
     pub build_focused_retest_manifest: bool,
@@ -180,6 +181,7 @@ where
     let mut args = Args {
         build_shadow_cycle_decision: env_bool("RESEARCH_BUILD_SHADOW_CYCLE_DECISION"),
         build_retest_horizon_plan: env_bool("RESEARCH_BUILD_RETEST_HORIZON_PLAN"),
+        run_retest_refresh_cycle: env_bool("RESEARCH_RUN_RETEST_REFRESH_CYCLE"),
         run_retest_cycle_scheduler: env_bool("RESEARCH_RUN_RETEST_CYCLE_SCHEDULER"),
         build_retest_horizon_status: env_bool("RESEARCH_BUILD_RETEST_HORIZON_STATUS"),
         build_focused_retest_manifest: env_bool("RESEARCH_BUILD_FOCUSED_RETEST_MANIFEST"),
@@ -253,6 +255,9 @@ where
             }
             "--build-retest-horizon-plan" => {
                 args.build_retest_horizon_plan = true;
+            }
+            "--run-retest-refresh-cycle" => {
+                args.run_retest_refresh_cycle = true;
             }
             "--run-retest-cycle-scheduler" => {
                 args.run_retest_cycle_scheduler = true;
@@ -595,11 +600,21 @@ where
     }
     if args.build_retest_horizon_plan
         && (args.build_retest_horizon_status
+            || args.run_retest_refresh_cycle
             || args.run_retest_cycle_scheduler
             || args.build_focused_retest_manifest)
     {
         return Err(AppError::config(
             "use --build-retest-horizon-plan separately from retest status, scheduler, or focused manifest modes",
+        ));
+    }
+    if args.run_retest_refresh_cycle
+        && (args.build_retest_horizon_status
+            || args.run_retest_cycle_scheduler
+            || args.build_focused_retest_manifest)
+    {
+        return Err(AppError::config(
+            "use --run-retest-refresh-cycle separately from retest status, scheduler, or focused manifest modes",
         ));
     }
     if args.build_retest_horizon_status
@@ -621,6 +636,10 @@ where
     validate_research_report_input_args(&args)?;
     if args.build_retest_horizon_plan {
         validate_retest_horizon_plan_build_args(&args)?;
+        return Ok(Some(args));
+    }
+    if args.run_retest_refresh_cycle {
+        validate_retest_refresh_cycle_args(&args)?;
         return Ok(Some(args));
     }
     if args.build_retest_horizon_status {
@@ -720,6 +739,9 @@ where
 }
 
 pub async fn run(args: Args) -> AppResult<RunSummary> {
+    if args.run_retest_refresh_cycle {
+        return run_retest_refresh_cycle_mode(&args).await;
+    }
     if args.build_retest_horizon_plan {
         return build_retest_horizon_plan_mode(&args).await;
     }
@@ -1067,6 +1089,111 @@ async fn build_retest_horizon_plan_mode(args: &Args) -> AppResult<RunSummary> {
     })
 }
 
+async fn run_retest_refresh_cycle_mode(args: &Args) -> AppResult<RunSummary> {
+    let output_partition_at_ms = args.now_ms.unwrap_or_else(now_ms);
+    let manifest = load_input_manifest(args).await?.ok_or_else(|| {
+        AppError::config(
+            "--run-retest-refresh-cycle requires --input-manifest-file or S3 manifest input",
+        )
+    })?;
+    validate_input_manifest(Some(&manifest))?;
+    let bundles = read_input_bundles(args, Some(&manifest)).await?;
+    validate_manifest_budget(Some(&manifest), &manifest.runtime_budget_policy)?;
+    enforce_budget(
+        "candidate_bundle_count",
+        bundles.len(),
+        manifest.runtime_budget_policy.max_candidate_bundle_count,
+    )?;
+    let report = load_research_report(args).await?;
+    let latest_l1_as_of_ms = retest_plan_latest_l1_as_of_ms(args).await?;
+    let plan = build_retest_horizon_plan(
+        &bundles,
+        &report,
+        &RetestHorizonPlanBuildOptions {
+            generated_at_ms: output_partition_at_ms,
+            manifest_label: input_manifest_label(args),
+            report_label: research_report_label(args),
+            latest_l1_as_of_ms,
+        },
+    )?;
+    let mut output_files =
+        write_retest_refresh_cycle_plan_output(args, &plan, output_partition_at_ms).await?;
+
+    let status = build_retest_horizon_status(
+        &plan,
+        None,
+        &RetestHorizonStatusBuildOptions {
+            generated_at_ms: output_partition_at_ms,
+            plan_file: output_files.first().cloned(),
+            driver_summary_file: None,
+            checkpoint_s3_write: args.output_s3_bucket.is_some(),
+        },
+    )?;
+    let validation = validate_retest_horizon_status(&status)?;
+    output_files.extend(
+        write_retest_refresh_cycle_status_output(args, &status, output_partition_at_ms).await?,
+    );
+
+    let mut focused_retest_manifests_created = 0;
+    let mut focused_retest_horizon_count = 0;
+    let mut focused_retest_candidate_bundle_refs = 0;
+    if validation.scheduler_action == "RUN_FOCUSED_RETEST_RESEARCH" {
+        let build = build_focused_retest_manifest(
+            &status,
+            &manifest,
+            &FocusedRetestBuildOptions {
+                generated_at_ms: output_partition_at_ms,
+                research_packet_id: focused_retest_packet_id(args, output_partition_at_ms),
+                run_scope: focused_retest_run_scope(args),
+                next_actions: args.focused_retest_next_actions.clone(),
+                historical_replay_index_ref_mode: args
+                    .focused_retest_historical_replay_index_ref_mode,
+                s3_write: args.output_s3_bucket.is_some(),
+            },
+        )?;
+        focused_retest_manifests_created = 1;
+        focused_retest_horizon_count = build.summary.focused.focus_horizon_count;
+        focused_retest_candidate_bundle_refs =
+            build.summary.focused.selected_candidate_bundle_ref_count;
+        output_files.extend(
+            write_retest_refresh_cycle_focused_manifest_output(
+                args,
+                &build,
+                output_partition_at_ms,
+            )
+            .await?,
+        );
+    }
+
+    Ok(RunSummary {
+        retest_horizon_plans_created: 1,
+        retest_horizon_statuses_validated: 1,
+        retest_cycle_scheduler_action: Some(validation.scheduler_action),
+        retest_cycle_run_not_before_ms: validation.run_not_before_ms,
+        focused_retest_manifests_created,
+        focused_retest_horizon_count,
+        focused_retest_candidate_bundle_refs,
+        shadow_cycle_decisions_validated: 0,
+        shadow_cycle_decisions_created: 0,
+        shadow_cycle_scheduler_action: None,
+        shadow_cycle_run_not_before_ms: None,
+        shadow_cycle_focused_research_manifest_file: None,
+        processed_bundles: 0,
+        replay_runs_created: 0,
+        historical_replay_runs_loaded: 0,
+        oss_adapter_runs_loaded: 0,
+        shadow_validation_runs_loaded: 0,
+        shadow_validation_runs_created: 0,
+        paper_trade_candidates_created: 0,
+        paper_trade_runs_created: 0,
+        paper_trade_summaries_created: 0,
+        paper_trade_marks_created: 0,
+        portfolio_risk_reject_events_created: 0,
+        portfolio_reduce_only_signals_created: 0,
+        output_files,
+    })
+}
+
 async fn build_retest_horizon_status_mode(args: &Args) -> AppResult<RunSummary> {
     let plan = load_retest_horizon_plan(args).await?;
     let driver_summary = load_retest_driver_summary(args)?;
@@ -1345,6 +1472,90 @@ fn load_retest_driver_summary(args: &Args) -> AppResult<Option<serde_json::Value
     let bytes = fs::read(path)?;
     let value = serde_json::from_slice(&bytes)?;
     Ok(Some(value))
+}
+
+async fn write_retest_refresh_cycle_plan_output(
+    args: &Args,
+    plan: &serde_json::Value,
+    output_partition_at_ms: i64,
+) -> AppResult<Vec<String>> {
+    if let Some(output_dir) = args.output_dir.as_deref() {
+        let path = output_dir.join("retest-horizon-plan.json");
+        return Ok(vec![
+            write_pretty_json_file(&path, plan)?.display().to_string(),
+        ]);
+    }
+    let Some(bucket) = args.output_s3_bucket.as_deref() else {
+        return Err(AppError::config(
+            "--run-retest-refresh-cycle requires --output-dir or --output-s3-bucket",
+        ));
+    };
+    write_retest_horizon_plan_to_s3(
+        bucket,
+        "retest-horizon-plan/schema=research_retest_horizon_plan_v1",
+        plan,
+        output_partition_at_ms,
+    )
+    .await
+    .map(|uri| vec![uri])
+}
+
+async fn write_retest_refresh_cycle_status_output(
+    args: &Args,
+    status: &serde_json::Value,
+    output_partition_at_ms: i64,
+) -> AppResult<Vec<String>> {
+    if let Some(output_dir) = args.output_dir.as_deref() {
+        let path = output_dir.join("retest-horizon-status.json");
+        return Ok(vec![
+            write_pretty_json_file(&path, status)?.display().to_string(),
+        ]);
+    }
+    let Some(bucket) = args.output_s3_bucket.as_deref() else {
+        return Err(AppError::config(
+            "--run-retest-refresh-cycle requires --output-dir or --output-s3-bucket",
+        ));
+    };
+    write_retest_horizon_status_to_s3(
+        bucket,
+        "retest-horizon-status/schema=research_horizon_status_checkpoint_v1",
+        status,
+        output_partition_at_ms,
+    )
+    .await
+    .map(|uri| vec![uri])
+}
+
+async fn write_retest_refresh_cycle_focused_manifest_output(
+    args: &Args,
+    build: &FocusedRetestManifestBuild,
+    output_partition_at_ms: i64,
+) -> AppResult<Vec<String>> {
+    if let Some(output_dir) = args.output_dir.as_deref() {
+        let manifest_path = output_dir.join("research-input-manifest.json");
+        let summary_path = output_dir.join("research-input-manifest.summary.json");
+        return Ok(vec![
+            write_research_input_manifest(&manifest_path, &build.manifest)?
+                .display()
+                .to_string(),
+            write_pretty_json_file(&summary_path, &build.summary)?
+                .display()
+                .to_string(),
+        ]);
+    }
+    let Some(bucket) = args.output_s3_bucket.as_deref() else {
+        return Err(AppError::config(
+            "--run-retest-refresh-cycle requires --output-dir or --output-s3-bucket",
+        ));
+    };
+    write_research_input_manifest_to_s3(
+        bucket,
+        "research-input-manifest/schema=research_input_manifest_v1",
+        &build.manifest,
+        output_partition_at_ms,
+    )
+    .await
+    .map(|uri| vec![uri])
 }
 
 async fn write_retest_horizon_plan_outputs(
@@ -2538,6 +2749,67 @@ fn validate_retest_horizon_plan_build_args(args: &Args) -> AppResult<()> {
     Ok(())
 }
 
+fn validate_retest_refresh_cycle_args(args: &Args) -> AppResult<()> {
+    if args.input_manifest_file.is_some()
+        && (args.input_manifest_s3_bucket.is_some() || args.input_manifest_s3_key.is_some())
+    {
+        return Err(AppError::config(
+            "use either --input-manifest-file or --input-manifest-s3-bucket/--input-manifest-s3-key, not both",
+        ));
+    }
+    if args.input_manifest_s3_bucket.is_some() != args.input_manifest_s3_key.is_some() {
+        return Err(AppError::config(
+            "RESEARCH_INPUT_MANIFEST_S3_BUCKET and RESEARCH_INPUT_MANIFEST_S3_KEY must be set together",
+        ));
+    }
+    if args.input_manifest_file.is_none() && args.input_manifest_s3_key.is_none() {
+        return Err(AppError::config(
+            "--run-retest-refresh-cycle requires --input-manifest-file or S3 manifest input",
+        ));
+    }
+    if !has_research_report_input(args) {
+        return Err(AppError::config(
+            "--run-retest-refresh-cycle requires --research-report-file or S3 report input",
+        ));
+    }
+    if has_retest_horizon_plan_input(args) || has_retest_horizon_status_input(args) {
+        return Err(AppError::config(
+            "--run-retest-refresh-cycle creates fresh plan/status; do not pass retest horizon plan/status inputs",
+        ));
+    }
+    if args.retest_horizon_plan_output_file.is_some()
+        || args.retest_horizon_status_output_file.is_some()
+        || args.focused_retest_manifest_output_file.is_some()
+        || args.focused_retest_summary_output_file.is_some()
+        || args.retest_driver_summary_file.is_some()
+    {
+        return Err(AppError::config(
+            "--run-retest-refresh-cycle uses --output-dir or --output-s3-bucket, not individual retest/focus output files",
+        ));
+    }
+    if args.output_dir.is_some() && args.output_s3_bucket.is_some() {
+        return Err(AppError::config(
+            "use either --output-dir or --output-s3-bucket, not both",
+        ));
+    }
+    if args.output_s3_prefix.is_some() {
+        return Err(AppError::config(
+            "--run-retest-refresh-cycle writes multiple artifact families; do not pass --output-s3-prefix",
+        ));
+    }
+    if args.output_dir.is_none() && args.output_s3_bucket.is_none() {
+        return Err(AppError::config(
+            "--run-retest-refresh-cycle requires --output-dir or --output-s3-bucket",
+        ));
+    }
+    if args.focused_retest_next_actions.is_empty() {
+        return Err(AppError::config(
+            "focused retest next action list must not be empty",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_focused_retest_manifest_build_args(args: &Args) -> AppResult<()> {
     if !has_retest_horizon_status_input(args) {
         return Err(AppError::config(
@@ -2769,6 +3041,18 @@ horizon plan, removing the local shell/JQ status summarizer from scheduler paths
   --build-retest-horizon-status
   --retest-horizon-plan-file /tmp/nangman-crypto/research-current-approved-batch/<run-id>/retest-horizon-plan.json
   --retest-horizon-status-output-file /tmp/nangman-crypto/research-current-approved-batch/<run-id>/retest-horizon-status.json
+
+Retest refresh cycle mode rebuilds the plan/status from current manifest,
+research report, and latest Market-L1 watermark. It writes no dispatching
+manifest while the status is WAIT; when replay is ready it writes a focused
+research_input_manifest_v1 under the existing dispatcher prefix:
+  --run-retest-refresh-cycle
+  --input-manifest-s3-bucket nangman-crypto-dev-research-<account-suffix>
+  --input-manifest-s3-key research-input-manifest/schema=research_input_manifest_v1/...
+  --research-report-s3-bucket nangman-crypto-dev-research-<account-suffix>
+  --research-report-s3-key research-run-report/schema=research_run_report_v1/.../report.json
+  --market-l1-s3-bucket nangman-crypto-dev-market-ingest-l1-<account-suffix>
+  --output-s3-bucket nangman-crypto-dev-research-<account-suffix>
 
 Retest cycle scheduler mode is safe to call repeatedly. It does not write a
 manifest before run_not_before_ms, and if an old WAIT status is past due it asks

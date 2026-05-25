@@ -86,6 +86,7 @@ pub fn build_retest_horizon_status(
         &[
             "run_research_replay_for_horizon",
             "materialize_completed_native_replay_sample",
+            "accumulate_completed_native_replay_samples",
         ],
     );
     let waiting_for_market_l1_count = count_action(&rows, "wait_for_market_l1_horizon");
@@ -1063,7 +1064,7 @@ mod tests {
     }
 
     #[test]
-    fn builds_wait_status_from_plan() {
+    fn builds_run_status_when_some_horizons_can_accumulate_samples() {
         let status = build_retest_horizon_status(
             &plan(),
             None,
@@ -1080,7 +1081,11 @@ mod tests {
             status["schema_version"],
             json!(RETEST_HORIZON_STATUS_SCHEMA_VERSION)
         );
-        assert_eq!(status["verdict"], json!("WAIT_FOR_MARKET_L1_HORIZON"));
+        assert_eq!(status["verdict"], json!("REPLAY_READY_FOR_SOME_HORIZONS"));
+        assert_eq!(
+            status["next_decision"]["scheduler_hint"]["run_now_replay_ready"],
+            json!(true)
+        );
         assert_eq!(
             status["next_decision"]["scheduler_hint"]["run_research_after_l1_as_of_ms"],
             json!(1_779_719_361_452_i64)
