@@ -5,6 +5,7 @@ env:
     AWS_REGION: ap-northeast-2
     IMAGE_REPO_NAME: ecr-nangman-dev-research-apn2
     ECS_CONTAINER_NAME: research-app
+    ECS_TASK_DEFINITION_FAMILY: td-nangman-dev-research-apn2
     DOCKER_BUILDKIT: "1"
 
 phases:
@@ -23,9 +24,44 @@ phases:
   post_build:
     commands:
       - docker push "${IMAGE_URI}"
+      - aws ecs describe-task-definition --task-definition "${ECS_TASK_DEFINITION_FAMILY}" > current-task-definition.json
+      - |
+        python3 - <<'PY'
+        import json
+        import os
+
+        with open("current-task-definition.json", "r", encoding="utf-8") as handle:
+            task_definition = json.load(handle)["taskDefinition"]
+
+        for field in [
+            "taskDefinitionArn",
+            "revision",
+            "status",
+            "requiresAttributes",
+            "compatibilities",
+            "registeredAt",
+            "registeredBy",
+            "deregisteredAt",
+        ]:
+            task_definition.pop(field, None)
+
+        container_name = os.environ["ECS_CONTAINER_NAME"]
+        image_uri = os.environ["IMAGE_URI"]
+        for container in task_definition["containerDefinitions"]:
+            if container["name"] == container_name:
+                container["image"] = image_uri
+                break
+        else:
+            raise SystemExit(f"container not found in task definition: {container_name}")
+
+        with open("register-task-definition.json", "w", encoding="utf-8") as handle:
+            json.dump(task_definition, handle)
+        PY
+      - aws ecs register-task-definition --cli-input-json file://register-task-definition.json > registered-task-definition.json
       - printf '[{"name":"%s","imageUri":"%s"}]' "${ECS_CONTAINER_NAME}" "${IMAGE_URI}" > imagedefinitions.json
       - cat imagedefinitions.json
 
 artifacts:
   files:
     - imagedefinitions.json
+    - registered-task-definition.json
