@@ -49,6 +49,20 @@
         {
           "name": "RESEARCH_HISTORICAL_REPLAY_RUN_INDEX_S3_READ_LIMIT",
           "value": "20"
+        },
+        {
+          "name": "NANGMAN_ALERT_ENV",
+          "value": "dev"
+        },
+        {
+          "name": "NANGMAN_ALERT_MIN_PRIORITY",
+          "value": "P2"
+        }
+      ],
+      "secrets": [
+        {
+          "name": "NANGMAN_ALERT_WEBHOOK_URL",
+          "valueFrom": "arn:aws:secretsmanager:ap-northeast-2:<aws-account-id>:secret:nangman/dev/mattermost/webhook"
         }
       ],
       "logConfiguration": {

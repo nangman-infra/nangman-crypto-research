@@ -1,6 +1,7 @@
 #![recursion_limit = "256"]
 
 pub mod admission;
+pub mod alert;
 pub mod artifacts;
 pub mod cli;
 pub mod error;

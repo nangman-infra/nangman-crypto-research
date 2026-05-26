@@ -40,6 +40,68 @@ Optional historical replay input:
 --historical-replay-run-index-file /Volumes/WD/Developments/nangman-crypto/data/reports/research-local/replay-run-index/schema=replay_run_index_v1/dt=2026-05-09/hour=00/research_run_report_id=.../part-000001.jsonl
 ```
 
+## Mattermost Alerts
+
+`research-app` can emit human-readable Mattermost alerts for events that need
+operator attention. Delivery is best-effort: a webhook failure is logged to
+stderr and does not fail the research run.
+
+Configure the webhook through secrets or task environment. Do not commit the
+real URL.
+
+```bash
+NANGMAN_ALERT_WEBHOOK_URL=<mattermost-webhook-url>
+NANGMAN_ALERT_ENV=dev
+NANGMAN_ALERT_MIN_PRIORITY=P2
+```
+
+Priority behavior:
+
+```text
+P0: portfolio notional or live/order safety boundary changed
+P1: PROMOTE_TO_PAPER or paper candidate created
+P2: PROMOTE_TO_SHADOW or shadow validation created
+P3: RETEST blocker summary, only when explicitly enabled
+```
+
+Optional lower-signal summaries:
+
+```bash
+NANGMAN_ALERT_MIN_PRIORITY=P3
+NANGMAN_ALERT_INCLUDE_RETEST_SUMMARY=true
+NANGMAN_ALERT_INCLUDE_SHADOW_WAIT=true
+```
+
+Message shape is intentionally stable for operators:
+
+```text
+[P2][research-app] PROMOTE_TO_SHADOW 후보 발생
+
+결론:
+후보가 shadow 관측 단계로 올라갔습니다. 주문 실행은 없고 forward observation만 시작됩니다.
+
+현재 상태:
+- report_id: ...
+- run_scope: ...
+- RETEST: ...
+- PRUNE: ...
+- PROMOTE_TO_SHADOW: ...
+- paper candidates: 0
+- max_total_notional_pct: 0.0000
+
+주요 원인:
+- deterministic_shadow_gate_passed: ...
+
+다음 행동:
+- watch shadow validation until completion evidence exists
+- do not create paper/live approval from pending shadow state
+
+안전 상태:
+- order execution: disabled by research-app contract
+- EXECUTION_APPROVED: never emitted by research-app
+- LIVE_READY: never emitted by research-app
+```
+
 Batch manifest input:
 
 ```json

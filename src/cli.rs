@@ -1,4 +1,7 @@
 use crate::admission::{horizon_ms, validate_bundle_admission};
+use crate::alert::{
+    emit_research_report_alert_from_env, emit_shadow_cycle_decision_alert_from_env,
+};
 use crate::error::{AppError, AppResult};
 use crate::focused_retest::{
     FocusedRetestBuildOptions, FocusedRetestManifestBuild, HistoricalReplayIndexRefMode,
@@ -1015,6 +1018,7 @@ pub async fn run(args: Args) -> AppResult<RunSummary> {
         )
         .await?,
     );
+    emit_research_report_alert_from_env(&report).await;
 
     Ok(RunSummary {
         retest_horizon_plans_created: 0,
@@ -1155,6 +1159,7 @@ async fn build_shadow_cycle_decision_mode(args: &Args) -> AppResult<RunSummary> 
 
     let output_files =
         write_shadow_cycle_decision_outputs(args, &decision, output_partition_at_ms).await?;
+    emit_shadow_cycle_decision_alert_from_env(&decision).await;
 
     Ok(RunSummary {
         retest_horizon_plans_created: 0,
@@ -2059,6 +2064,7 @@ async fn run_shadow_cycle_from_latest_state_mode(args: &Args) -> AppResult<RunSu
         output_files,
         write_shadow_cycle_decision_outputs(args, &decision, output_partition_at_ms).await?,
     );
+    emit_shadow_cycle_decision_alert_from_env(&decision).await;
 
     Ok(RunSummary {
         shadow_cycle_decisions_validated: 1,
