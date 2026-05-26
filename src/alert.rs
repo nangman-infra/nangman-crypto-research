@@ -399,9 +399,22 @@ fn append_section(sections: &mut Vec<String>, title: &str, values: &[String]) {
 mod tests {
     use super::*;
     use crate::model::{
-        DEFAULT_RESEARCH_GATE_POLICY_VERSION, HypothesisOutput, ResearchGatePolicy,
-        ResearchRunStatus, SummaryFinding,
+        DEFAULT_RESEARCH_GATE_POLICY_VERSION, HypothesisOutput, PortfolioAllocationSnapshot,
+        ResearchGatePolicy, ResearchRunStatus, ShadowCycleDecisionSafety, ShadowCycleSampleState,
+        SummaryFinding,
     };
+
+    #[test]
+    fn parses_priority_and_filters_by_minimum_priority() {
+        assert_eq!(AlertPriority::parse("p0"), Some(AlertPriority::P0));
+        assert_eq!(AlertPriority::parse(" P3 "), Some(AlertPriority::P3));
+        assert_eq!(AlertPriority::parse("later"), None);
+
+        let config = test_config(AlertPriority::P2);
+        assert!(config.allows(AlertPriority::P0));
+        assert!(config.allows(AlertPriority::P2));
+        assert!(!config.allows(AlertPriority::P3));
+    }
 
     #[test]
     fn retest_summary_message_is_human_readable() {
@@ -414,13 +427,8 @@ mod tests {
                 "unseen_window_validation_not_proven".to_owned(),
             ],
         }]);
-        let config = AlertConfig {
-            webhook_url: "https://example.com/hook".to_owned(),
-            environment: "dev".to_owned(),
-            min_priority: AlertPriority::P3,
-            include_retest_summary: true,
-            include_shadow_wait: false,
-        };
+        let mut config = test_config(AlertPriority::P3);
+        config.include_retest_summary = true;
         let event = research_report_alert_event(&report, &config).expect("event is created");
         let text = event.text("dev");
 
@@ -441,17 +449,184 @@ mod tests {
             bias: ResearchBias::PromoteToShadowBias,
             reason_codes: vec!["deterministic_shadow_gate_passed".to_owned()],
         }]);
-        let config = AlertConfig {
-            webhook_url: "https://example.com/hook".to_owned(),
-            environment: "dev".to_owned(),
-            min_priority: AlertPriority::P2,
-            include_retest_summary: false,
-            include_shadow_wait: false,
-        };
+        let config = test_config(AlertPriority::P2);
         let event = research_report_alert_event(&report, &config).expect("event is created");
 
         assert_eq!(event.priority, AlertPriority::P2);
         assert!(event.text("dev").contains("PROMOTE_TO_SHADOW"));
+    }
+
+    #[test]
+    fn retest_summary_is_quiet_by_default() {
+        let report = test_report(vec![SummaryFinding {
+            candidate_id: "cand_001".to_owned(),
+            candidate_lifecycle_key: "life_001".to_owned(),
+            bias: ResearchBias::RetestBias,
+            reason_codes: vec!["promotion_sample_count_below_minimum".to_owned()],
+        }]);
+
+        assert!(research_report_alert_event(&report, &test_config(AlertPriority::P3)).is_none());
+    }
+
+    #[test]
+    fn retest_summary_is_filtered_when_min_priority_is_too_high() {
+        let report = test_report(vec![SummaryFinding {
+            candidate_id: "cand_001".to_owned(),
+            candidate_lifecycle_key: "life_001".to_owned(),
+            bias: ResearchBias::RetestBias,
+            reason_codes: vec!["promotion_sample_count_below_minimum".to_owned()],
+        }]);
+        let mut config = test_config(AlertPriority::P2);
+        config.include_retest_summary = true;
+
+        assert!(research_report_alert_event(&report, &config).is_none());
+    }
+
+    #[test]
+    fn promote_to_paper_alert_has_p1_priority() {
+        let report = test_report(vec![SummaryFinding {
+            candidate_id: "cand_001".to_owned(),
+            candidate_lifecycle_key: "life_001".to_owned(),
+            bias: ResearchBias::PromoteToPaperBias,
+            reason_codes: vec!["shadow_validation_passed".to_owned()],
+        }]);
+        let event = research_report_alert_event(&report, &test_config(AlertPriority::P1))
+            .expect("paper event is created");
+
+        assert_eq!(event.priority, AlertPriority::P1);
+        assert!(
+            event
+                .text("prod")
+                .contains("keep live/order execution disabled")
+        );
+    }
+
+    #[test]
+    fn non_zero_portfolio_notional_forces_p0_alert() {
+        let mut report = test_report(vec![SummaryFinding {
+            candidate_id: "cand_001".to_owned(),
+            candidate_lifecycle_key: "life_001".to_owned(),
+            bias: ResearchBias::RetestBias,
+            reason_codes: vec!["portfolio_notional_non_zero".to_owned()],
+        }]);
+        report.portfolio_allocation_snapshot = Some(test_portfolio_snapshot());
+
+        let event = research_report_alert_event(&report, &test_config(AlertPriority::P0))
+            .expect("portfolio event is created");
+
+        assert_eq!(event.priority, AlertPriority::P0);
+        assert!(event.text("dev").contains("max_total_notional_pct: 0.1000"));
+    }
+
+    #[test]
+    fn reason_summary_limits_to_top_five_reasons() {
+        let report = test_report(vec![
+            finding("cand_001", ResearchBias::PromoteToShadowBias, &["c", "a"]),
+            finding("cand_002", ResearchBias::PromoteToShadowBias, &["c", "b"]),
+            finding("cand_003", ResearchBias::PromoteToShadowBias, &["c", "b"]),
+            finding("cand_004", ResearchBias::PromoteToShadowBias, &["d"]),
+            finding("cand_005", ResearchBias::PromoteToShadowBias, &["e"]),
+            finding("cand_006", ResearchBias::PromoteToShadowBias, &["f"]),
+        ]);
+
+        let reasons = top_reason_lines(&report, AlertPriority::P2);
+
+        assert_eq!(reasons.len(), 5);
+        assert_eq!(reasons[0], "c: 3");
+        assert!(reasons.contains(&"b: 2".to_owned()));
+        assert!(!reasons.contains(&"f: 1".to_owned()));
+    }
+
+    #[test]
+    fn focused_shadow_cycle_decision_creates_p2_alert() {
+        let decision = test_shadow_decision(
+            ShadowCycleSchedulerAction::RunFocusedShadowSampleAccumulationResearch,
+            false,
+        );
+
+        let event = shadow_cycle_decision_alert_event(&decision, &test_config(AlertPriority::P2))
+            .expect("focused shadow event is created");
+
+        assert_eq!(event.priority, AlertPriority::P2);
+        assert!(
+            event
+                .text("dev")
+                .contains("shadow sample accumulation dispatch")
+        );
+    }
+
+    #[test]
+    fn wait_shadow_cycle_decision_requires_opt_in() {
+        let decision = test_shadow_decision(
+            ShadowCycleSchedulerAction::WaitUntilTargetWindowMaterializes,
+            false,
+        );
+        assert!(
+            shadow_cycle_decision_alert_event(&decision, &test_config(AlertPriority::P3)).is_none()
+        );
+
+        let mut config = test_config(AlertPriority::P3);
+        config.include_shadow_wait = true;
+        let event = shadow_cycle_decision_alert_event(&decision, &config)
+            .expect("wait event is created when enabled");
+
+        assert_eq!(event.priority, AlertPriority::P3);
+        assert!(event.text("dev").contains("shadow holding window"));
+    }
+
+    #[test]
+    fn unsafe_shadow_cycle_decision_forces_p0_alert() {
+        let decision = test_shadow_decision(ShadowCycleSchedulerAction::Noop, true);
+
+        let event = shadow_cycle_decision_alert_event(&decision, &test_config(AlertPriority::P0))
+            .expect("unsafe decision event is created");
+
+        assert_eq!(event.priority, AlertPriority::P0);
+        assert!(event.text("dev").contains("order_execution_enabled: true"));
+    }
+
+    #[tokio::test]
+    async fn send_event_rejects_invalid_webhook_url_before_http_call() {
+        let config = AlertConfig {
+            webhook_url: "not-a-url".to_owned(),
+            environment: "dev".to_owned(),
+            min_priority: AlertPriority::P0,
+            include_retest_summary: false,
+            include_shadow_wait: false,
+        };
+        let event = AlertEvent {
+            priority: AlertPriority::P0,
+            title: "test".to_owned(),
+            conclusion: "test".to_owned(),
+            current_state: Vec::new(),
+            reasons: Vec::new(),
+            next_actions: Vec::new(),
+            safety: Vec::new(),
+        };
+
+        let error = send_event(&config, &event)
+            .await
+            .expect_err("URL is rejected");
+        assert_eq!(error, "webhook URL must start with http:// or https://");
+    }
+
+    fn test_config(min_priority: AlertPriority) -> AlertConfig {
+        AlertConfig {
+            webhook_url: "https://example.com/hook".to_owned(),
+            environment: "dev".to_owned(),
+            min_priority,
+            include_retest_summary: false,
+            include_shadow_wait: false,
+        }
+    }
+
+    fn finding(candidate_id: &str, bias: ResearchBias, reasons: &[&str]) -> SummaryFinding {
+        SummaryFinding {
+            candidate_id: candidate_id.to_owned(),
+            candidate_lifecycle_key: format!("life_{candidate_id}"),
+            bias,
+            reason_codes: reasons.iter().map(|reason| (*reason).to_owned()).collect(),
+        }
     }
 
     fn test_report(summary_findings: Vec<SummaryFinding>) -> ResearchRunReport {
@@ -482,6 +657,66 @@ mod tests {
             replay_run_ids: Vec::new(),
             invalid_input_candidate_keys: Vec::new(),
             schema_version: "research_run_report_v1".to_owned(),
+        }
+    }
+
+    fn test_portfolio_snapshot() -> PortfolioAllocationSnapshot {
+        PortfolioAllocationSnapshot {
+            portfolio_allocation_snapshot_id: "portfolio_test".to_owned(),
+            schema_version: "portfolio_allocation_snapshot_v1".to_owned(),
+            allocation_policy_version: "test_policy".to_owned(),
+            computed_at_ms: 0,
+            market_regime: "test".to_owned(),
+            active_candidate_count: 1,
+            max_total_notional_pct: 0.1,
+            max_symbol_notional_pct: 0.1,
+            max_candidate_notional_pct: 0.1,
+            max_regime_notional_pct: 0.1,
+            candidate_allocations: Vec::new(),
+            rejected_candidates: Vec::new(),
+            reason_codes: vec!["portfolio_notional_non_zero".to_owned()],
+        }
+    }
+
+    fn test_shadow_decision(
+        scheduler_action: ShadowCycleSchedulerAction,
+        unsafe_boundary: bool,
+    ) -> ShadowCycleDecision {
+        ShadowCycleDecision {
+            schema_version: "research_shadow_cycle_decision_v1".to_owned(),
+            generated_at: "2026-05-26T00:00:00Z".to_owned(),
+            decision_id: "decision_test".to_owned(),
+            source_cycle_summary_file: None,
+            run_dir: None,
+            scheduler_action,
+            source_verdict: "WAIT_FOR_TARGET_HOLDING_WINDOW".to_owned(),
+            run_not_before_ms: Some(1),
+            run_not_before_at: Some("2026-05-26T01:00:00Z".to_owned()),
+            run_not_before_source: Some("target_window".to_owned()),
+            focused_research_manifest_file: None,
+            focused_research_summary_file: None,
+            latest_l1_as_of_ms: Some(1),
+            shadow_sample_state: ShadowCycleSampleState {
+                shadow_validation_count: 1,
+                target_window_materialized_count: 0,
+                candidate_lifecycle_count: 1,
+                partially_materialized_candidate_count: 0,
+                pending_target_window_candidate_count: 1,
+                total_sample_deficit: 3,
+                symbols: vec!["DOGE".to_owned()],
+            },
+            safe_next_actions: vec!["wait for target window".to_owned()],
+            blocked_actions: vec!["paper is blocked".to_owned()],
+            safety: ShadowCycleDecisionSafety {
+                s3_write: false,
+                ecs_task_started: false,
+                dispatcher_mode_changed: false,
+                local_decision_only: true,
+                shadow_status_mutated: false,
+                paper_live_enabled: false,
+                live_enabled: unsafe_boundary,
+                order_execution_enabled: unsafe_boundary,
+            },
         }
     }
 
