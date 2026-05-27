@@ -1199,9 +1199,9 @@ async fn run_paper_watch_live_cycle_mode(args: &Args) -> AppResult<RunSummary> {
             "paper watch candidate input must not be empty",
         ));
     }
-    let ticks = load_market_live_ticks(args, &candidates).await?;
-    let marks = build_paper_watch_live_marks(&candidates, &ticks);
     let output_partition_at_ms = args.now_ms.unwrap_or_else(now_ms);
+    let ticks = load_market_live_ticks(args, &candidates, output_partition_at_ms).await?;
+    let marks = build_paper_watch_live_marks(&candidates, &ticks);
     let output_files = if let Some(output_dir) = args.output_dir.as_deref() {
         write_paper_watch_live_marks(output_dir, &marks, output_partition_at_ms)?
             .into_iter()
@@ -1810,6 +1810,7 @@ async fn load_paper_watch_candidates(
 async fn load_market_live_ticks(
     args: &Args,
     candidates: &[crate::model::PaperWatchCandidate],
+    run_id_ms: i64,
 ) -> AppResult<Vec<crate::model::MarketLiveTick>> {
     if let Some(path) = args.market_live_tick_file.as_deref() {
         return read_market_live_ticks(path);
@@ -1819,7 +1820,7 @@ async fn load_market_live_ticks(
             "provide --market-live-tick-file or --market-live-nats-url",
         ));
     };
-    let configs = market_live_nats_configs_for_candidates(args, candidates, url);
+    let configs = market_live_nats_configs_for_candidates(args, candidates, url, run_id_ms);
     let mut ticks = Vec::new();
     for config in configs {
         ticks.extend(read_market_live_ticks_from_nats(&config).await?);
@@ -1831,6 +1832,7 @@ fn market_live_nats_configs_for_candidates(
     args: &Args,
     candidates: &[crate::model::PaperWatchCandidate],
     url: &str,
+    run_id_ms: i64,
 ) -> Vec<MarketLiveNatsConfig> {
     let base_config = MarketLiveNatsConfig {
         url: url.to_owned(),
@@ -1841,6 +1843,7 @@ fn market_live_nats_configs_for_candidates(
         batch_size: args.market_live_nats_batch_size,
         max_messages: args.market_live_nats_max_messages,
         ack_wait_secs: args.market_live_nats_ack_wait_secs,
+        delete_consumer_after_read: false,
     };
     if args.market_live_nats_subject != DEFAULT_MARKET_LIVE_NATS_SUBJECT {
         return vec![base_config];
@@ -1859,7 +1862,8 @@ fn market_live_nats_configs_for_candidates(
         .into_iter()
         .map(|symbol| MarketLiveNatsConfig {
             subject: format!("market_live_tick.created.*.{symbol}"),
-            consumer: format!("{}-{symbol}", args.market_live_nats_consumer),
+            consumer: format!("{}-{run_id_ms}-{symbol}", args.market_live_nats_consumer),
+            delete_consumer_after_read: true,
             ..base_config.clone()
         })
         .collect()

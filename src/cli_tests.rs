@@ -3014,7 +3014,7 @@ fn paper_watch_live_cycle_defaults_nats_subjects_to_candidate_symbols() {
     let args = default_args();
 
     let configs =
-        market_live_nats_configs_for_candidates(&args, &candidates, "nats://127.0.0.1:4222");
+        market_live_nats_configs_for_candidates(&args, &candidates, "nats://127.0.0.1:4222", 123);
 
     let subjects = configs
         .iter()
@@ -3034,14 +3034,19 @@ fn paper_watch_live_cycle_defaults_nats_subjects_to_candidate_symbols() {
     assert_eq!(
         consumers,
         vec![
-            "research-paper-watch-live-ton",
-            "research-paper-watch-live-zec"
+            "research-paper-watch-live-123-ton",
+            "research-paper-watch-live-123-zec"
         ]
     );
     assert!(
         configs
             .iter()
             .all(|config| config.url == "nats://127.0.0.1:4222")
+    );
+    assert!(
+        configs
+            .iter()
+            .all(|config| config.delete_consumer_after_read)
     );
 }
 
@@ -3059,11 +3064,12 @@ fn paper_watch_live_cycle_keeps_explicit_nats_subject() {
     };
 
     let configs =
-        market_live_nats_configs_for_candidates(&args, &candidates, "nats://127.0.0.1:4222");
+        market_live_nats_configs_for_candidates(&args, &candidates, "nats://127.0.0.1:4222", 123);
 
     assert_eq!(configs.len(), 1);
     assert_eq!(configs[0].subject, "market_live_tick.created.binance.ton");
     assert_eq!(configs[0].consumer, "custom-consumer");
+    assert!(!configs[0].delete_consumer_after_read);
 }
 
 #[test]

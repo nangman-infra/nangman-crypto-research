@@ -32,6 +32,7 @@ pub struct MarketLiveNatsConfig {
     pub batch_size: usize,
     pub max_messages: usize,
     pub ack_wait_secs: u64,
+    pub delete_consumer_after_read: bool,
 }
 
 pub fn read_paper_watch_candidates(path: &Path) -> AppResult<Vec<PaperWatchCandidate>> {
@@ -75,7 +76,20 @@ pub async fn read_market_live_ticks_from_nats(
             ))
         })?;
 
-    read_ticks_from_consumer(consumer, config).await
+    let ticks_result = read_ticks_from_consumer(consumer, config).await;
+    let delete_result = if config.delete_consumer_after_read {
+        stream.delete_consumer(&config.consumer).await.map(Some)
+    } else {
+        Ok(None)
+    };
+    match (ticks_result, delete_result) {
+        (Ok(ticks), Ok(_)) => Ok(ticks),
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(AppError::nats(format!(
+            "delete market live consumer {} on stream {}: {error}",
+            config.consumer, config.stream
+        ))),
+    }
 }
 
 pub fn build_paper_watch_live_marks(
@@ -519,6 +533,7 @@ mod tests {
             batch_size: 100,
             max_messages: 500,
             ack_wait_secs: 30,
+            delete_consumer_after_read: false,
         };
         assert!(validate_nats_config(&config).is_err());
         config.url = "nats://127.0.0.1:4222".to_owned();
