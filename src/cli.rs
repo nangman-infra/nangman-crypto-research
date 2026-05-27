@@ -23,7 +23,7 @@ use crate::model::{
     RetestCycleSourceStateSafety, SelectedMarketArtifactTrace, ShadowCycleSchedulerAction,
     ShadowValidationRun,
 };
-use crate::paper::build_paper_artifacts;
+use crate::paper::{build_paper_artifacts, build_paper_watch_candidates};
 use crate::replay::{build_invalid_replay_run, run_native_replay};
 use crate::report::build_report;
 use crate::retest_cycle::{read_retest_horizon_status, validate_retest_horizon_status};
@@ -972,6 +972,11 @@ pub async fn run(args: Args) -> AppResult<RunSummary> {
         &oss_adapter_runs,
         &completed_shadow_validation_runs,
     );
+    let paper_watch_candidates = build_paper_watch_candidates(&report, &bundles, created_at_ms);
+    report.paper_watch_candidates = paper_watch_candidates
+        .iter()
+        .map(|candidate| candidate.paper_watch_candidate_id.clone())
+        .collect();
     let paper_artifacts = build_paper_artifacts(
         &report,
         &bundles,
@@ -987,6 +992,7 @@ pub async fn run(args: Args) -> AppResult<RunSummary> {
         report: &report,
         replay_runs: &replay_runs,
         shadow_validation_runs: &report.shadow_validation_runs,
+        paper_watch_candidates: &paper_watch_candidates,
         paper_trade_candidates: &paper_artifacts.candidates,
         paper_trade_runs: &paper_artifacts.runs,
         paper_trade_summaries: &paper_artifacts.summaries,

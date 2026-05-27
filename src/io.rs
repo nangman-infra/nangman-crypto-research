@@ -2,7 +2,7 @@ use crate::artifacts::{build_replay_run_index_records, build_research_aggregate_
 use crate::error::{AppError, AppResult};
 use crate::model::{
     IntelCandidateEvidenceBundle, MarketFeatureDelta, MarketRegimeContext, OssAdapterRun,
-    PaperTradeCandidate, PaperTradeMark, PaperTradeRun, PaperTradeSummary,
+    PaperTradeCandidate, PaperTradeMark, PaperTradeRun, PaperTradeSummary, PaperWatchCandidate,
     PortfolioAllocationSnapshot, PortfolioReduceOnlySignal, PortfolioRiskRejectEvent, ReplayRun,
     ReplayRunIndexRecord, ResearchInputManifest, ResearchRunReport, ShadowCycleDecision,
     ShadowValidationRun,
@@ -22,6 +22,7 @@ pub struct ResearchOutputArtifacts<'a> {
     pub report: &'a ResearchRunReport,
     pub replay_runs: &'a [ReplayRun],
     pub shadow_validation_runs: &'a [ShadowValidationRun],
+    pub paper_watch_candidates: &'a [PaperWatchCandidate],
     pub paper_trade_candidates: &'a [PaperTradeCandidate],
     pub paper_trade_runs: &'a [PaperTradeRun],
     pub paper_trade_summaries: &'a [PaperTradeSummary],
@@ -208,6 +209,21 @@ pub fn write_research_outputs(
             output_dir,
             &shadow_key,
             artifacts.shadow_validation_runs,
+        )?);
+    }
+
+    if !artifacts.paper_watch_candidates.is_empty() {
+        let candidate_key = format!(
+            "paper-watch-candidate/schema={}/dt={}/hour={:02}/research_run_report_id={}/part-000001.jsonl",
+            artifacts.paper_watch_candidates[0].schema_version,
+            dt.date,
+            dt.hour,
+            report.research_run_report_id
+        );
+        written.push(write_jsonl(
+            output_dir,
+            &candidate_key,
+            artifacts.paper_watch_candidates,
         )?);
     }
 

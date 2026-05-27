@@ -115,6 +115,7 @@ pub fn build_report(
         pruned_candidate_keys,
         retest_candidate_keys,
         shadow_validation_runs,
+        paper_watch_candidates: Vec::new(),
         paper_trade_candidates: Vec::new(),
         oss_adapter_run_ids: oss_adapter_runs
             .iter()

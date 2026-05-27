@@ -152,6 +152,7 @@ fn research_report_alert_event(
         .get(ResearchBias::PruneBias.report_key())
         .unwrap_or(&0);
     let paper_count = report.paper_trade_candidates.len();
+    let paper_watch_count = report.paper_watch_candidates.len();
     let shadow_count = report.shadow_validation_runs.len();
     let max_total_notional_pct = report
         .portfolio_allocation_snapshot
@@ -171,6 +172,13 @@ fn research_report_alert_event(
             AlertPriority::P1,
             "PROMOTE_TO_PAPER 후보 발생".to_owned(),
             "shadow를 통과한 paper 후보가 생성됐습니다. 아직 EXECUTION_APPROVED/LIVE_READY는 아닙니다."
+                .to_owned(),
+        )
+    } else if paper_watch_count > 0 {
+        (
+            AlertPriority::P2,
+            "PAPER_WATCH 후보 발생".to_owned(),
+            "positive RETEST 후보가 돈을 쓰지 않는 forward paper-watch 관측 단계로 올라갔습니다."
                 .to_owned(),
         )
     } else if shadow_count > 0 || promote_shadow_count > 0 {
@@ -207,6 +215,7 @@ fn research_report_alert_event(
             format!("PROMOTE_TO_SHADOW: {promote_shadow_count}"),
             format!("PROMOTE_TO_PAPER: {promote_paper_count}"),
             format!("shadow validation created: {shadow_count}"),
+            format!("paper-watch candidates: {paper_watch_count}"),
             format!("paper candidates: {paper_count}"),
             format!("max_total_notional_pct: {max_total_notional_pct:.4}"),
         ],
@@ -365,8 +374,8 @@ fn research_next_actions(priority: AlertPriority) -> Vec<String> {
             "keep live/order execution disabled".to_owned(),
         ],
         AlertPriority::P2 => vec![
-            "watch shadow validation until completion evidence exists".to_owned(),
-            "do not create paper/live approval from pending shadow state".to_owned(),
+            "watch forward paper/shadow validation until completion evidence exists".to_owned(),
+            "do not create live approval from pending observation state".to_owned(),
         ],
         AlertPriority::P3 => vec![
             "run focused retest or gap resolver for the listed blockers".to_owned(),
@@ -454,6 +463,26 @@ mod tests {
 
         assert_eq!(event.priority, AlertPriority::P2);
         assert!(event.text("dev").contains("PROMOTE_TO_SHADOW"));
+    }
+
+    #[test]
+    fn paper_watch_alert_has_p2_priority_without_execution_language() {
+        let mut report = test_report(vec![SummaryFinding {
+            candidate_id: "cand_001".to_owned(),
+            candidate_lifecycle_key: "life_001".to_owned(),
+            bias: ResearchBias::RetestBias,
+            reason_codes: vec!["native_replay_positive_but_promotion_blocked".to_owned()],
+        }]);
+        report.paper_watch_candidates = vec!["paper_watch_candidate_001".to_owned()];
+        let event = research_report_alert_event(&report, &test_config(AlertPriority::P2))
+            .expect("paper watch event is created");
+        let text = event.text("dev");
+
+        assert_eq!(event.priority, AlertPriority::P2);
+        assert!(text.contains("PAPER_WATCH"));
+        assert!(text.contains("paper-watch candidates: 1"));
+        assert!(text.contains("order execution: disabled by research-app contract"));
+        assert!(!text.contains("LIVE_READY: true"));
     }
 
     #[test]
@@ -642,6 +671,7 @@ mod tests {
             pruned_candidate_keys: Vec::new(),
             retest_candidate_keys: Vec::new(),
             shadow_validation_runs: Vec::new(),
+            paper_watch_candidates: Vec::new(),
             paper_trade_candidates: Vec::new(),
             oss_adapter_run_ids: Vec::new(),
             oss_adapter_reject_count: 0,

@@ -60,7 +60,7 @@ Priority behavior:
 ```text
 P0: portfolio notional or live/order safety boundary changed
 P1: PROMOTE_TO_PAPER or paper candidate created
-P2: PROMOTE_TO_SHADOW or shadow validation created
+P2: PAPER_WATCH, PROMOTE_TO_SHADOW, or shadow validation created
 P3: RETEST blocker summary, only when explicitly enabled
 ```
 
@@ -86,6 +86,7 @@ Message shape is intentionally stable for operators:
 - RETEST: ...
 - PRUNE: ...
 - PROMOTE_TO_SHADOW: ...
+- paper-watch candidates: ...
 - paper candidates: 0
 - max_total_notional_pct: 0.0000
 
@@ -1171,6 +1172,26 @@ no LIVE_READY
 If deterministic market replay data is missing, the app emits `RETEST_BIAS` with explicit reasons instead of pretending profitability was verified.
 
 The report includes `partition_aggregates` with sample counts, win rate, net edge, profit factor, inferred unseen windows, regime labels, and deterministic gate reasons. Positive replay is never enough by itself: promotion is blocked until sample, unseen, split, liquidity, cost, and regime evidence clear the research gate.
+
+Positive `RETEST_BIAS` candidates can still enter the paper-watch lane. This is
+not `PROMOTE_TO_PAPER_BIAS` and it does not approve execution. The app writes
+`paper-watch-candidate/schema=paper_watch_candidate_v1/.../part-000001.jsonl`
+only when all of these are true:
+
+```text
+summary finding bias == RETEST_BIAS
+candidate bundle approved_universe_symbol == true
+aggregate positive_net_count > 0
+aggregate completed_count > 0
+aggregate non_positive_net_count == 0
+aggregate missing_market_replay_data_count / replay_run_count <= 50%
+aggregate mean net after cost > 0
+no major failure event such as exchange_delisting, exchange_halt, security_incident, or chain_halt
+```
+
+Paper-watch artifacts are forward-observation inputs. Their safety block keeps
+`paper_only=true`, `live_enabled=false`, `order_execution_enabled=false`, and
+`execution_approval_emitted=false`.
 
 Each `replay_run_v1.result_summary` includes `liquidity_filter_summary` when the candidate bundle requests a liquidity filter. Native replay marks it `passed` only when matched Market-L1 replay data contains a liquidity metric such as `trade_volume` or `volume_change_same_window` with positive current volume. If no liquidity metric is matched, the aggregate gate keeps `liquidity_filter_not_materialized`; if liquidity data exists but has no positive current volume, it emits `liquidity_filter_failed`.
 

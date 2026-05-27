@@ -17,6 +17,7 @@ pub const PAPER_TRADE_CANDIDATE_SCHEMA_VERSION: &str = "paper_trade_candidate_v1
 pub const PAPER_TRADE_RUN_SCHEMA_VERSION: &str = "paper_trade_run_v1";
 pub const PAPER_TRADE_SUMMARY_SCHEMA_VERSION: &str = "paper_trade_summary_v1";
 pub const PAPER_TRADE_MARK_SCHEMA_VERSION: &str = "paper_trade_mark_v1";
+pub const PAPER_WATCH_CANDIDATE_SCHEMA_VERSION: &str = "paper_watch_candidate_v1";
 pub const PAPER_ACCOUNT_PROFILE_SCHEMA_VERSION: &str = "paper_account_profile_v1";
 pub const DEFAULT_PAPER_ACCOUNT_PROFILE_ID: &str = "research_app_internal_paper_profile_v1";
 pub const DEFAULT_PAPER_FEE_MODEL_VERSION: &str = "research_paper_fee_model_v1";
@@ -561,6 +562,8 @@ pub struct ResearchRunReport {
     pub pruned_candidate_keys: Vec<String>,
     pub retest_candidate_keys: Vec<String>,
     pub shadow_validation_runs: Vec<ShadowValidationRun>,
+    #[serde(default)]
+    pub paper_watch_candidates: Vec<String>,
     pub paper_trade_candidates: Vec<String>,
     pub oss_adapter_run_ids: Vec<String>,
     pub oss_adapter_reject_count: usize,
@@ -925,6 +928,54 @@ pub struct PaperTradeMark {
     pub net_result_band: String,
     pub survival_result: String,
     pub schema_version: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct PaperWatchCandidate {
+    pub paper_watch_candidate_id: String,
+    pub candidate_id: String,
+    pub candidate_lifecycle_key: String,
+    pub symbol_canonical: String,
+    pub source_research_run_id: String,
+    pub source_research_packet_id: String,
+    pub source_research_bias: ResearchBias,
+    pub historical_survival_band: SurvivalBand,
+    pub admission_reason_codes: Vec<String>,
+    pub blocked_promotion_reason_codes: Vec<String>,
+    pub replay_sample_summary: PaperWatchReplaySampleSummary,
+    pub expected_cost_profile: PaperExpectedCostProfile,
+    pub expected_risk_profile: PaperExpectedRiskProfile,
+    pub target_max_holding_hours: u32,
+    pub absolute_max_holding_hours: u32,
+    pub force_flat_policy: String,
+    pub paper_start_recommendation: String,
+    pub safety: PaperWatchSafety,
+    pub created_at_ms: i64,
+    pub schema_version: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct PaperWatchReplaySampleSummary {
+    pub research_aggregate_key: String,
+    pub replay_run_count: usize,
+    pub completed_count: usize,
+    pub positive_net_count: usize,
+    pub non_positive_net_count: usize,
+    pub missing_market_replay_data_count: usize,
+    pub insufficient_evidence_count: usize,
+    pub effective_completed_sample_weight: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub weighted_mean_net_after_cost_bps: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub weighted_profit_factor_ppm: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct PaperWatchSafety {
+    pub paper_only: bool,
+    pub live_enabled: bool,
+    pub order_execution_enabled: bool,
+    pub execution_approval_emitted: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]

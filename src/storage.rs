@@ -483,6 +483,24 @@ pub async fn write_research_outputs_to_s3(
         written.push(format!("s3://{bucket}/{shadow_key}"));
     }
 
+    if !artifacts.paper_watch_candidates.is_empty() {
+        let candidate_key = format!(
+            "{prefix}paper-watch-candidate/schema={}/dt={}/hour={:02}/research_run_report_id={}/part-000001.jsonl",
+            artifacts.paper_watch_candidates[0].schema_version,
+            dt.date,
+            dt.hour,
+            report.research_run_report_id
+        );
+        put_jsonl_object(
+            &client,
+            bucket,
+            &candidate_key,
+            artifacts.paper_watch_candidates,
+        )
+        .await?;
+        written.push(format!("s3://{bucket}/{candidate_key}"));
+    }
+
     if !artifacts.paper_trade_candidates.is_empty() {
         let candidate_key = format!(
             "{prefix}paper-trade-candidate/schema={}/dt={}/hour={:02}/research_run_report_id={}/part-000001.jsonl",
