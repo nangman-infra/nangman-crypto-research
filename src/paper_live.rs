@@ -470,6 +470,45 @@ mod tests {
     }
 
     #[test]
+    fn parses_market_ingest_live_tick_field_names() {
+        let raw = br#"{
+          "schema_version":"market_live_tick_v1",
+          "event_id":"evt_upbit_depth_snapshot_1779886041381_207258",
+          "producer_run_id":"market-ingest-upbit-1779884335",
+          "venue":"upbit",
+          "source_role":"execution",
+          "market_type":"spot",
+          "event_type":"depth_snapshot",
+          "symbol_native":"KRW-WLD",
+          "symbol_canonical":"WLD",
+          "base_asset":"WLD",
+          "quote_asset":"KRW",
+          "exchange_timestamp_ms":1779885936566,
+          "ingest_timestamp_ms":1779886041381,
+          "latency_ms":104815,
+          "sequence_id":"upbit:orderbook:ts-1779885936566",
+          "sequence_tag":"upbit:orderbook:ts-1779885936566",
+          "price_source":"orderbook_top_mid",
+          "last_price":null,
+          "best_bid_price":532.0,
+          "best_ask_price":534.0,
+          "mark_price":533.0,
+          "trade_volume":null,
+          "payload_sha256":"dc4dbd13392d35cde59e3ddc525c54d20e0c3c3abd1c67ff9a5646400e3e795d"
+        }"#;
+
+        let tick: MarketLiveTick = serde_json::from_slice(raw).unwrap();
+
+        assert_eq!(tick.symbol_canonical, "WLD");
+        assert_eq!(tick.quantity, None);
+        assert_eq!(
+            tick.raw_payload_sha256,
+            "dc4dbd13392d35cde59e3ddc525c54d20e0c3c3abd1c67ff9a5646400e3e795d"
+        );
+        validate_tick(&tick).unwrap();
+    }
+
+    #[test]
     fn nats_config_and_tick_validation_reject_bad_inputs() {
         let mut config = MarketLiveNatsConfig {
             url: "http://nats.example:4222".to_owned(),

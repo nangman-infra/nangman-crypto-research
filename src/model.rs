@@ -1008,7 +1008,9 @@ pub struct MarketLiveTick {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mark_price: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "trade_volume")]
     pub quantity: Option<f64>,
+    #[serde(alias = "payload_sha256")]
     pub raw_payload_sha256: String,
 }
 
