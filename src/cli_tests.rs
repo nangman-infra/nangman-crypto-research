@@ -217,6 +217,57 @@ fn market_live_tick_json(
     })
 }
 
+fn paper_watch_candidate_json(id: &str, symbol: &str) -> Value {
+    json!({
+        "paper_watch_candidate_id": id,
+        "candidate_id": format!("cand_{id}"),
+        "candidate_lifecycle_key": format!("cand_{id}:v1"),
+        "symbol_canonical": symbol,
+        "source_research_run_id": "research_run_001",
+        "source_research_packet_id": "packet_001",
+        "source_research_bias": "RETEST_BIAS",
+        "historical_survival_band": "stable",
+        "admission_reason_codes": ["retest_positive_watch_admitted"],
+        "blocked_promotion_reason_codes": ["needs_forward_observation"],
+        "replay_sample_summary": {
+            "research_aggregate_key": "agg_001",
+            "replay_run_count": 10,
+            "completed_count": 5,
+            "positive_net_count": 3,
+            "non_positive_net_count": 2,
+            "missing_market_replay_data_count": 0,
+            "insufficient_evidence_count": 0,
+            "effective_completed_sample_weight": 5.0,
+            "weighted_mean_net_after_cost_bps": 12.5,
+            "weighted_profit_factor_ppm": 1200000
+        },
+        "expected_cost_profile": {
+            "fee_model_version": "fee",
+            "slippage_model_version": "slippage",
+            "estimated_cost_bps": 8.0,
+            "cost_stressed_mean_net_after_cost_bps": 4.5
+        },
+        "expected_risk_profile": {
+            "survival_band": "stable",
+            "max_drawdown_band": "low",
+            "positive_net_count": 3,
+            "non_positive_net_count": 2
+        },
+        "target_max_holding_hours": 24,
+        "absolute_max_holding_hours": 72,
+        "force_flat_policy": "paper_watch_only_no_order_execution",
+        "paper_start_recommendation": "start_forward_paper_watch",
+        "safety": {
+            "paper_only": true,
+            "live_enabled": false,
+            "order_execution_enabled": false,
+            "execution_approval_emitted": false
+        },
+        "created_at_ms": 1_000,
+        "schema_version": "paper_watch_candidate_v1"
+    })
+}
+
 fn bundle_json_with_gate_inputs(index: usize, decision_ms: i64) -> Value {
     let mut bundle = bundle_json();
     bundle["candidate_id"] = json!(format!("cand_{index:03}"));
@@ -2950,6 +3001,69 @@ async fn paper_watch_live_cycle_marks_live_ticks_without_order_approval() {
     assert_eq!(marks[0]["safety"]["order_execution_enabled"], json!(false));
     assert_eq!(marks[0]["net_return_bps"], json!(0.0));
     assert_eq!(marks[1]["source_market_live_event_id"], json!("tick_003"));
+}
+
+#[test]
+fn paper_watch_live_cycle_defaults_nats_subjects_to_candidate_symbols() {
+    let candidates = serde_json::from_value::<Vec<crate::model::PaperWatchCandidate>>(json!([
+        paper_watch_candidate_json("watch_ton", "TON"),
+        paper_watch_candidate_json("watch_zec", "ZEC"),
+        paper_watch_candidate_json("watch_ton_duplicate", "ton")
+    ]))
+    .expect("paper watch candidates parse");
+    let args = default_args();
+
+    let configs =
+        market_live_nats_configs_for_candidates(&args, &candidates, "nats://127.0.0.1:4222");
+
+    let subjects = configs
+        .iter()
+        .map(|config| config.subject.as_str())
+        .collect::<Vec<_>>();
+    let consumers = configs
+        .iter()
+        .map(|config| config.consumer.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        subjects,
+        vec![
+            "market_live_tick.created.*.ton",
+            "market_live_tick.created.*.zec"
+        ]
+    );
+    assert_eq!(
+        consumers,
+        vec![
+            "research-paper-watch-live-ton",
+            "research-paper-watch-live-zec"
+        ]
+    );
+    assert!(
+        configs
+            .iter()
+            .all(|config| config.url == "nats://127.0.0.1:4222")
+    );
+}
+
+#[test]
+fn paper_watch_live_cycle_keeps_explicit_nats_subject() {
+    let candidates = serde_json::from_value::<Vec<crate::model::PaperWatchCandidate>>(json!([
+        paper_watch_candidate_json("watch_ton", "TON"),
+        paper_watch_candidate_json("watch_zec", "ZEC")
+    ]))
+    .expect("paper watch candidates parse");
+    let args = Args {
+        market_live_nats_subject: "market_live_tick.created.binance.ton".to_owned(),
+        market_live_nats_consumer: "custom-consumer".to_owned(),
+        ..default_args()
+    };
+
+    let configs =
+        market_live_nats_configs_for_candidates(&args, &candidates, "nats://127.0.0.1:4222");
+
+    assert_eq!(configs.len(), 1);
+    assert_eq!(configs[0].subject, "market_live_tick.created.binance.ton");
+    assert_eq!(configs[0].consumer, "custom-consumer");
 }
 
 #[test]

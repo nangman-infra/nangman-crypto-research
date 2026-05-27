@@ -1199,7 +1199,7 @@ async fn run_paper_watch_live_cycle_mode(args: &Args) -> AppResult<RunSummary> {
             "paper watch candidate input must not be empty",
         ));
     }
-    let ticks = load_market_live_ticks(args).await?;
+    let ticks = load_market_live_ticks(args, &candidates).await?;
     let marks = build_paper_watch_live_marks(&candidates, &ticks);
     let output_partition_at_ms = args.now_ms.unwrap_or_else(now_ms);
     let output_files = if let Some(output_dir) = args.output_dir.as_deref() {
@@ -1807,7 +1807,10 @@ async fn load_paper_watch_candidates(
     }
 }
 
-async fn load_market_live_ticks(args: &Args) -> AppResult<Vec<crate::model::MarketLiveTick>> {
+async fn load_market_live_ticks(
+    args: &Args,
+    candidates: &[crate::model::PaperWatchCandidate],
+) -> AppResult<Vec<crate::model::MarketLiveTick>> {
     if let Some(path) = args.market_live_tick_file.as_deref() {
         return read_market_live_ticks(path);
     }
@@ -1816,7 +1819,20 @@ async fn load_market_live_ticks(args: &Args) -> AppResult<Vec<crate::model::Mark
             "provide --market-live-tick-file or --market-live-nats-url",
         ));
     };
-    read_market_live_ticks_from_nats(&MarketLiveNatsConfig {
+    let configs = market_live_nats_configs_for_candidates(args, candidates, url);
+    let mut ticks = Vec::new();
+    for config in configs {
+        ticks.extend(read_market_live_ticks_from_nats(&config).await?);
+    }
+    Ok(ticks)
+}
+
+fn market_live_nats_configs_for_candidates(
+    args: &Args,
+    candidates: &[crate::model::PaperWatchCandidate],
+    url: &str,
+) -> Vec<MarketLiveNatsConfig> {
+    let base_config = MarketLiveNatsConfig {
         url: url.to_owned(),
         stream: args.market_live_nats_stream.clone(),
         subject: args.market_live_nats_subject.clone(),
@@ -1825,8 +1841,44 @@ async fn load_market_live_ticks(args: &Args) -> AppResult<Vec<crate::model::Mark
         batch_size: args.market_live_nats_batch_size,
         max_messages: args.market_live_nats_max_messages,
         ack_wait_secs: args.market_live_nats_ack_wait_secs,
-    })
-    .await
+    };
+    if args.market_live_nats_subject != DEFAULT_MARKET_LIVE_NATS_SUBJECT {
+        return vec![base_config];
+    }
+
+    let symbols = candidates
+        .iter()
+        .map(|candidate| market_live_subject_symbol_token(&candidate.symbol_canonical))
+        .filter(|symbol| !symbol.is_empty())
+        .collect::<BTreeSet<_>>();
+    if symbols.is_empty() {
+        return vec![base_config];
+    }
+
+    symbols
+        .into_iter()
+        .map(|symbol| MarketLiveNatsConfig {
+            subject: format!("market_live_tick.created.*.{symbol}"),
+            consumer: format!("{}-{symbol}", args.market_live_nats_consumer),
+            ..base_config.clone()
+        })
+        .collect()
+}
+
+fn market_live_subject_symbol_token(value: &str) -> String {
+    value
+        .trim()
+        .chars()
+        .filter_map(|character| {
+            if character.is_ascii_alphanumeric() {
+                Some(character.to_ascii_lowercase())
+            } else if character == '_' || character == '-' {
+                Some(character)
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 async fn retest_plan_latest_l1_as_of_ms(args: &Args) -> AppResult<Option<i64>> {
