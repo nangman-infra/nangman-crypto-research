@@ -383,8 +383,8 @@ pub fn write_paper_watch_live_marks(
     }
     let dt = partition(output_partition_at_ms)?;
     let key = format!(
-        "paper-watch-live-mark/schema={}/dt={}/hour={:02}/part-000001.jsonl",
-        marks[0].schema_version, dt.date, dt.hour
+        "paper-watch-live-mark/schema={}/dt={}/hour={:02}/run_id={}/part-000001.jsonl",
+        marks[0].schema_version, dt.date, dt.hour, output_partition_at_ms
     );
     Ok(vec![write_jsonl(output_dir, &key, marks)?])
 }

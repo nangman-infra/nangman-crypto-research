@@ -698,8 +698,8 @@ pub async fn write_paper_watch_live_marks_to_s3(
         ));
     }
     let key = format!(
-        "{prefix}dt={}/hour={:02}/part-000001.jsonl",
-        dt.date, dt.hour
+        "{prefix}dt={}/hour={:02}/run_id={}/part-000001.jsonl",
+        dt.date, dt.hour, output_partition_at_ms
     );
     put_jsonl_object(&client, bucket, &key, marks).await?;
     Ok(vec![format!("s3://{bucket}/{key}")])
