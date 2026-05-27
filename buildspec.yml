@@ -6,6 +6,9 @@ env:
     IMAGE_REPO_NAME: ecr-nangman-dev-research-apn2
     ECS_CONTAINER_NAME: research-app
     ECS_TASK_DEFINITION_FAMILY: td-nangman-dev-research-apn2
+    ECS_OBSERVER_TASK_DEFINITION_FAMILY: td-nangman-dev-research-observer-apn2
+    ECS_CLUSTER_NAME: ecs-nangman-dev-invest-apn2
+    ECS_OBSERVER_SERVICE_NAME: svc-nangman-dev-research-observer
     DOCKER_BUILDKIT: "1"
 
 phases:
@@ -56,8 +59,59 @@ phases:
 
         with open("register-task-definition.json", "w", encoding="utf-8") as handle:
             json.dump(task_definition, handle)
+
+        observer_task_definition = json.loads(json.dumps(task_definition))
+        observer_task_definition["family"] = os.environ["ECS_OBSERVER_TASK_DEFINITION_FAMILY"]
+        output_bucket = ""
+        for container in observer_task_definition["containerDefinitions"]:
+            if container["name"] != container_name:
+                continue
+            environment = {
+                item["name"]: item["value"]
+                for item in container.get("environment", [])
+            }
+            output_bucket = environment.get("RESEARCH_OUTPUT_S3_BUCKET", "")
+            environment.update({
+                "RESEARCH_RUN_PAPER_WATCH_OBSERVER": "true",
+                "RESEARCH_PAPER_WATCH_CANDIDATE_S3_BUCKET": output_bucket,
+                "RESEARCH_PAPER_WATCH_CANDIDATE_S3_PREFIX": "paper-watch-candidate/schema=paper_watch_candidate_v1",
+                "RESEARCH_PAPER_WATCH_LIVE_MARK_S3_PREFIX": "paper-watch-live-mark/schema=paper_watch_live_mark_v1",
+                "RESEARCH_OUTPUT_S3_PREFIX": "paper-watch-observer-state/schema=paper_watch_observer_snapshot_v1",
+                "RESEARCH_MARKET_LIVE_NATS_URL": "nats://192.168.10.45:4222",
+                "RESEARCH_MARKET_LIVE_NATS_BATCH_SIZE": "20",
+                "RESEARCH_MARKET_LIVE_NATS_MAX_MESSAGES": "60",
+                "RESEARCH_PAPER_WATCH_OBSERVER_POLL_SECS": "5",
+            })
+            container["environment"] = [
+                {"name": name, "value": value}
+                for name, value in sorted(environment.items())
+                if value
+            ]
+            container.pop("command", None)
+            break
+        else:
+            raise SystemExit(f"container not found in observer task definition: {container_name}")
+
+        if not output_bucket:
+            raise SystemExit("RESEARCH_OUTPUT_S3_BUCKET is required for observer task definition")
+
+        with open("register-observer-task-definition.json", "w", encoding="utf-8") as handle:
+            json.dump(observer_task_definition, handle)
         PY
       - aws ecs register-task-definition --cli-input-json file://register-task-definition.json > registered-task-definition.json
+      - aws ecs register-task-definition --cli-input-json file://register-observer-task-definition.json > registered-observer-task-definition.json
+      - OBSERVER_TASK_DEFINITION_ARN="$(python3 -c 'import json; print(json.load(open("registered-observer-task-definition.json"))["taskDefinition"]["taskDefinitionArn"])')"
+      - OBSERVER_SERVICE_STATUS="$(aws ecs describe-services --cluster "${ECS_CLUSTER_NAME}" --services "${ECS_OBSERVER_SERVICE_NAME}" --query 'services[0].status' --output text 2>/dev/null || true)"
+      - |
+        if [ "${OBSERVER_SERVICE_STATUS}" = "ACTIVE" ]; then
+          aws ecs update-service \
+            --cluster "${ECS_CLUSTER_NAME}" \
+            --service "${ECS_OBSERVER_SERVICE_NAME}" \
+            --task-definition "${OBSERVER_TASK_DEFINITION_ARN}" \
+            --desired-count 1
+        else
+          echo "observer service ${ECS_OBSERVER_SERVICE_NAME} is not ACTIVE; registered observer task definition only"
+        fi
       - printf '[{"name":"%s","imageUri":"%s"}]' "${ECS_CONTAINER_NAME}" "${IMAGE_URI}" > imagedefinitions.json
       - cat imagedefinitions.json
 
@@ -65,3 +119,4 @@ artifacts:
   files:
     - imagedefinitions.json
     - registered-task-definition.json
+    - registered-observer-task-definition.json

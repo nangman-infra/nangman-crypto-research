@@ -4,9 +4,10 @@ use crate::io::{
     ResearchOutputArtifacts, read_candidate_bundles_from_bytes,
     read_market_feature_deltas_matching_symbols_from_bytes, read_market_live_ticks_from_bytes,
     read_market_regime_contexts_from_bytes, read_oss_adapter_runs_from_bytes,
-    read_paper_watch_candidates_from_bytes, read_replay_run_index_records_from_bytes,
-    read_replay_runs_from_bytes, read_research_input_manifest_from_bytes,
-    read_research_run_report_from_bytes, read_shadow_validation_runs_from_bytes,
+    read_paper_watch_candidates_from_bytes, read_paper_watch_live_marks_from_bytes,
+    read_replay_run_index_records_from_bytes, read_replay_runs_from_bytes,
+    read_research_input_manifest_from_bytes, read_research_run_report_from_bytes,
+    read_shadow_validation_runs_from_bytes,
 };
 use crate::model::{
     IntelCandidateEvidenceBundle, MarketFeatureDelta, MarketLiveTick, MarketRegimeContext,
@@ -22,6 +23,7 @@ use aws_sdk_s3::Client;
 use aws_sdk_s3::error::ProvideErrorMetadata;
 use aws_types::region::Region;
 use chrono::{DateTime, Datelike, Timelike, Utc};
+use serde::Serialize;
 use std::collections::BTreeSet;
 use std::env;
 
@@ -68,6 +70,22 @@ pub async fn read_market_live_ticks_from_s3(
     let client = s3_client().await?;
     let bytes = get_object_bytes(&client, bucket, key).await?;
     read_market_live_ticks_from_bytes(&format!("s3://{bucket}/{key}"), bytes.as_ref())
+}
+
+pub async fn read_paper_watch_live_marks_from_s3(
+    bucket: &str,
+    keys: &[String],
+) -> AppResult<Vec<PaperWatchLiveMark>> {
+    let client = s3_client().await?;
+    let mut marks = Vec::new();
+    for key in keys {
+        let bytes = get_object_bytes(&client, bucket, key).await?;
+        marks.extend(read_paper_watch_live_marks_from_bytes(
+            &format!("s3://{bucket}/{key}"),
+            bytes.as_ref(),
+        )?);
+    }
+    Ok(marks)
 }
 
 pub async fn read_latest_retest_cycle_source_state_from_s3(
@@ -346,6 +364,38 @@ pub async fn discover_shadow_validation_run_keys_from_s3(
         read_limit,
         scan_limit,
         "shadow validation run",
+    )
+    .await
+}
+
+pub async fn discover_paper_watch_candidate_keys_from_s3(
+    bucket: &str,
+    prefix: &str,
+    read_limit: usize,
+    scan_limit: usize,
+) -> AppResult<Vec<String>> {
+    discover_latest_part_jsonl_keys_from_s3(
+        bucket,
+        prefix,
+        read_limit,
+        scan_limit,
+        "paper-watch candidate",
+    )
+    .await
+}
+
+pub async fn discover_paper_watch_live_mark_keys_from_s3(
+    bucket: &str,
+    prefix: &str,
+    read_limit: usize,
+    scan_limit: usize,
+) -> AppResult<Vec<String>> {
+    discover_latest_part_jsonl_keys_from_s3(
+        bucket,
+        prefix,
+        read_limit,
+        scan_limit,
+        "paper-watch live mark",
     )
     .await
 }
@@ -703,6 +753,37 @@ pub async fn write_paper_watch_live_marks_to_s3(
     );
     put_jsonl_object(&client, bucket, &key, marks).await?;
     Ok(vec![format!("s3://{bucket}/{key}")])
+}
+
+pub async fn write_paper_watch_observer_snapshot_to_s3<T: Serialize>(
+    bucket: &str,
+    prefix: &str,
+    snapshot: &T,
+    output_partition_at_ms: i64,
+) -> AppResult<String> {
+    if bucket.trim().is_empty() {
+        return Err(AppError::config(
+            "paper-watch observer snapshot output S3 bucket must not be empty",
+        ));
+    }
+    let client = s3_client().await?;
+    let dt = partition(output_partition_at_ms)?;
+    let prefix = normalize_prefix(if prefix.trim().is_empty() {
+        "paper-watch-observer-state/schema=paper_watch_observer_snapshot_v1"
+    } else {
+        prefix
+    });
+    if !prefix.starts_with("paper-watch-observer-state/") {
+        return Err(AppError::config(
+            "paper-watch observer S3 prefix must start with paper-watch-observer-state/",
+        ));
+    }
+    let key = format!(
+        "{prefix}dt={}/hour={:02}/run_id={}/state.json",
+        dt.date, dt.hour, output_partition_at_ms
+    );
+    put_object_json(&client, bucket, &key, snapshot).await?;
+    Ok(format!("s3://{bucket}/{key}"))
 }
 
 pub async fn write_research_input_manifest_to_s3(

@@ -33,6 +33,9 @@ use crate::paper_live::{
     DEFAULT_MARKET_LIVE_NATS_SUBJECT, MarketLiveNatsConfig, build_paper_watch_live_marks,
     read_market_live_ticks, read_market_live_ticks_from_nats, read_paper_watch_candidates,
 };
+use crate::paper_watch_observer::{
+    PAPER_WATCH_OBSERVER_SNAPSHOT_SCHEMA_VERSION, PaperWatchObserverState, active_candidates,
+};
 use crate::replay::{build_invalid_replay_run, run_native_replay};
 use crate::report::build_report;
 use crate::retest_cycle::{read_retest_horizon_status, validate_retest_horizon_status};
@@ -48,18 +51,21 @@ use crate::storage::{
     discover_latest_market_feature_delta_keys_from_s3,
     discover_latest_market_regime_context_keys_from_s3,
     discover_latest_symbol_universe_snapshot_end_ms_from_s3,
+    discover_paper_watch_candidate_keys_from_s3, discover_paper_watch_live_mark_keys_from_s3,
     discover_replay_run_index_keys_from_s3, discover_shadow_validation_run_keys_from_s3,
     read_candidate_bundles_from_s3, read_latest_retest_cycle_source_state_from_s3,
     read_latest_retest_horizon_status_from_s3, read_market_feature_deltas_from_s3,
     read_market_regime_contexts_from_s3, read_oss_adapter_runs_from_s3,
-    read_paper_watch_candidates_from_s3, read_replay_run_index_records_from_s3,
-    read_replay_runs_from_s3, read_research_input_manifest_from_s3,
-    read_research_run_report_from_s3, read_retest_horizon_plan_from_s3,
-    read_retest_horizon_status_from_s3, read_shadow_validation_runs_from_s3,
-    write_paper_watch_live_marks_to_s3, write_research_input_manifest_to_exact_s3_key_if_absent,
-    write_research_input_manifest_to_s3, write_research_outputs_to_s3,
-    write_retest_cycle_source_state_to_s3, write_retest_horizon_plan_to_s3,
-    write_retest_horizon_status_to_s3, write_shadow_cycle_decision_to_s3,
+    read_paper_watch_candidates_from_s3, read_paper_watch_live_marks_from_s3,
+    read_replay_run_index_records_from_s3, read_replay_runs_from_s3,
+    read_research_input_manifest_from_s3, read_research_run_report_from_s3,
+    read_retest_horizon_plan_from_s3, read_retest_horizon_status_from_s3,
+    read_shadow_validation_runs_from_s3, write_paper_watch_live_marks_to_s3,
+    write_paper_watch_observer_snapshot_to_s3,
+    write_research_input_manifest_to_exact_s3_key_if_absent, write_research_input_manifest_to_s3,
+    write_research_outputs_to_s3, write_retest_cycle_source_state_to_s3,
+    write_retest_horizon_plan_to_s3, write_retest_horizon_status_to_s3,
+    write_shadow_cycle_decision_to_s3,
 };
 use crate::time::now_ms;
 use serde::Serialize;
@@ -67,6 +73,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::path::PathBuf;
+use std::time::Duration;
+use tokio::time::sleep;
 
 const DEFAULT_MARKET_L1_S3_BUCKET: &str = "nangman-crypto-dev-market-ingest-l1-<account-suffix>";
 const MARKET_FEATURE_DELTA_ARTIFACT_TYPE: &str = "market_feature_delta";
@@ -79,6 +87,15 @@ const DEFAULT_SHADOW_VALIDATION_RUN_READ_LIMIT: usize = 100;
 const DEFAULT_SHADOW_VALIDATION_RUN_SCAN_LIMIT: usize = 1_000;
 const DEFAULT_SHADOW_VALIDATION_RUN_PREFIX: &str =
     "shadow-validation-run/schema=shadow_validation_run_v1";
+const DEFAULT_PAPER_WATCH_CANDIDATE_PREFIX: &str =
+    "paper-watch-candidate/schema=paper_watch_candidate_v1";
+const DEFAULT_PAPER_WATCH_LIVE_MARK_PREFIX: &str =
+    "paper-watch-live-mark/schema=paper_watch_live_mark_v1";
+const DEFAULT_PAPER_WATCH_OBSERVER_OUTPUT_PREFIX: &str =
+    "paper-watch-observer-state/schema=paper_watch_observer_snapshot_v1";
+const DEFAULT_PAPER_WATCH_OBSERVER_READ_LIMIT: usize = 100;
+const DEFAULT_PAPER_WATCH_OBSERVER_SCAN_LIMIT: usize = 2_000;
+const DEFAULT_PAPER_WATCH_OBSERVER_POLL_SECS: u64 = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Args {
@@ -91,6 +108,7 @@ pub struct Args {
     pub build_retest_horizon_status: bool,
     pub build_focused_retest_manifest: bool,
     pub run_paper_watch_live_cycle: bool,
+    pub run_paper_watch_observer: bool,
     pub shadow_cycle_decision_file: Option<PathBuf>,
     pub shadow_cycle_decision_output_file: Option<PathBuf>,
     pub shadow_cycle_latest_l1_as_of_ms: Option<i64>,
@@ -133,6 +151,14 @@ pub struct Args {
     pub paper_watch_candidate_file: Option<PathBuf>,
     pub paper_watch_candidate_s3_bucket: Option<String>,
     pub paper_watch_candidate_s3_key: Option<String>,
+    pub paper_watch_candidate_s3_prefix: String,
+    pub paper_watch_observer_read_limit: usize,
+    pub paper_watch_observer_scan_limit: usize,
+    pub paper_watch_observer_poll_secs: u64,
+    pub paper_watch_observer_max_iterations: usize,
+    pub paper_watch_live_mark_s3_prefix: String,
+    pub paper_watch_live_mark_read_limit: usize,
+    pub paper_watch_live_mark_scan_limit: usize,
     pub market_live_tick_file: Option<PathBuf>,
     pub market_live_nats_url: Option<String>,
     pub market_live_nats_stream: String,
@@ -191,6 +217,14 @@ pub struct RunSummary {
     pub paper_trade_summaries_created: usize,
     pub paper_trade_marks_created: usize,
     pub paper_watch_live_marks_created: usize,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub paper_watch_observer_iterations: usize,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub paper_watch_observer_snapshots_created: usize,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub paper_watch_observer_active_candidates: usize,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub paper_watch_observer_restored_live_marks: usize,
     pub portfolio_risk_reject_events_created: usize,
     pub portfolio_reduce_only_signals_created: usize,
     pub output_files: Vec<String>,
@@ -229,6 +263,7 @@ where
         build_retest_horizon_status: env_bool("RESEARCH_BUILD_RETEST_HORIZON_STATUS"),
         build_focused_retest_manifest: env_bool("RESEARCH_BUILD_FOCUSED_RETEST_MANIFEST"),
         run_paper_watch_live_cycle: env_bool("RESEARCH_RUN_PAPER_WATCH_LIVE_CYCLE"),
+        run_paper_watch_observer: env_bool("RESEARCH_RUN_PAPER_WATCH_OBSERVER"),
         shadow_cycle_decision_file: None,
         shadow_cycle_decision_output_file: env_string("RESEARCH_SHADOW_CYCLE_DECISION_OUTPUT_FILE")
             .map(PathBuf::from),
@@ -279,6 +314,34 @@ where
             .map(PathBuf::from),
         paper_watch_candidate_s3_bucket: env_string("RESEARCH_PAPER_WATCH_CANDIDATE_S3_BUCKET"),
         paper_watch_candidate_s3_key: env_string("RESEARCH_PAPER_WATCH_CANDIDATE_S3_KEY"),
+        paper_watch_candidate_s3_prefix: env_string("RESEARCH_PAPER_WATCH_CANDIDATE_S3_PREFIX")
+            .unwrap_or_else(|| DEFAULT_PAPER_WATCH_CANDIDATE_PREFIX.to_owned()),
+        paper_watch_observer_read_limit: env_usize(
+            "RESEARCH_PAPER_WATCH_OBSERVER_READ_LIMIT",
+            DEFAULT_PAPER_WATCH_OBSERVER_READ_LIMIT,
+        )?,
+        paper_watch_observer_scan_limit: env_usize(
+            "RESEARCH_PAPER_WATCH_OBSERVER_SCAN_LIMIT",
+            DEFAULT_PAPER_WATCH_OBSERVER_SCAN_LIMIT,
+        )?,
+        paper_watch_observer_poll_secs: env_u64(
+            "RESEARCH_PAPER_WATCH_OBSERVER_POLL_SECS",
+            DEFAULT_PAPER_WATCH_OBSERVER_POLL_SECS,
+        )?,
+        paper_watch_observer_max_iterations: env_usize_allow_zero(
+            "RESEARCH_PAPER_WATCH_OBSERVER_MAX_ITERATIONS",
+            0,
+        )?,
+        paper_watch_live_mark_s3_prefix: env_string("RESEARCH_PAPER_WATCH_LIVE_MARK_S3_PREFIX")
+            .unwrap_or_else(|| DEFAULT_PAPER_WATCH_LIVE_MARK_PREFIX.to_owned()),
+        paper_watch_live_mark_read_limit: env_usize(
+            "RESEARCH_PAPER_WATCH_LIVE_MARK_READ_LIMIT",
+            DEFAULT_PAPER_WATCH_OBSERVER_READ_LIMIT,
+        )?,
+        paper_watch_live_mark_scan_limit: env_usize(
+            "RESEARCH_PAPER_WATCH_LIVE_MARK_SCAN_LIMIT",
+            DEFAULT_PAPER_WATCH_OBSERVER_SCAN_LIMIT,
+        )?,
         market_live_tick_file: env_string("RESEARCH_MARKET_LIVE_TICK_FILE").map(PathBuf::from),
         market_live_nats_url: env_string("RESEARCH_MARKET_LIVE_NATS_URL"),
         market_live_nats_stream: env_string("RESEARCH_MARKET_LIVE_NATS_STREAM")
@@ -346,6 +409,9 @@ where
             }
             "--run-paper-watch-live-cycle" => {
                 args.run_paper_watch_live_cycle = true;
+            }
+            "--run-paper-watch-observer" => {
+                args.run_paper_watch_observer = true;
             }
             "--shadow-cycle-decision-file" => {
                 args.shadow_cycle_decision_file = Some(absolute_path_arg(
@@ -615,6 +681,66 @@ where
                     "--paper-watch-candidate-s3-key requires a value",
                 )?);
             }
+            "--paper-watch-candidate-s3-prefix" => {
+                args.paper_watch_candidate_s3_prefix = non_empty_arg(
+                    values.next(),
+                    "--paper-watch-candidate-s3-prefix requires a value",
+                )?;
+            }
+            "--paper-watch-observer-read-limit" => {
+                let raw = non_empty_arg(
+                    values.next(),
+                    "--paper-watch-observer-read-limit requires a positive integer",
+                )?;
+                args.paper_watch_observer_read_limit =
+                    parse_positive_usize("--paper-watch-observer-read-limit", &raw)?;
+            }
+            "--paper-watch-observer-scan-limit" => {
+                let raw = non_empty_arg(
+                    values.next(),
+                    "--paper-watch-observer-scan-limit requires a positive integer",
+                )?;
+                args.paper_watch_observer_scan_limit =
+                    parse_positive_usize("--paper-watch-observer-scan-limit", &raw)?;
+            }
+            "--paper-watch-observer-poll-secs" => {
+                let raw = non_empty_arg(
+                    values.next(),
+                    "--paper-watch-observer-poll-secs requires a positive integer",
+                )?;
+                args.paper_watch_observer_poll_secs =
+                    parse_positive_u64("--paper-watch-observer-poll-secs", &raw)?;
+            }
+            "--paper-watch-observer-max-iterations" => {
+                let raw = non_empty_arg(
+                    values.next(),
+                    "--paper-watch-observer-max-iterations requires a non-negative integer",
+                )?;
+                args.paper_watch_observer_max_iterations =
+                    parse_non_negative_usize("--paper-watch-observer-max-iterations", &raw)?;
+            }
+            "--paper-watch-live-mark-s3-prefix" => {
+                args.paper_watch_live_mark_s3_prefix = non_empty_arg(
+                    values.next(),
+                    "--paper-watch-live-mark-s3-prefix requires a value",
+                )?;
+            }
+            "--paper-watch-live-mark-read-limit" => {
+                let raw = non_empty_arg(
+                    values.next(),
+                    "--paper-watch-live-mark-read-limit requires a positive integer",
+                )?;
+                args.paper_watch_live_mark_read_limit =
+                    parse_positive_usize("--paper-watch-live-mark-read-limit", &raw)?;
+            }
+            "--paper-watch-live-mark-scan-limit" => {
+                let raw = non_empty_arg(
+                    values.next(),
+                    "--paper-watch-live-mark-scan-limit requires a positive integer",
+                )?;
+                args.paper_watch_live_mark_scan_limit =
+                    parse_positive_usize("--paper-watch-live-mark-scan-limit", &raw)?;
+            }
             "--market-live-tick-file" => {
                 args.market_live_tick_file = Some(absolute_path_arg(
                     values.next(),
@@ -808,6 +934,10 @@ where
         validate_paper_watch_live_cycle_args(&args)?;
         return Ok(Some(args));
     }
+    if args.run_paper_watch_observer {
+        validate_paper_watch_observer_args(&args)?;
+        return Ok(Some(args));
+    }
     validate_retest_horizon_plan_input_args(&args)?;
     validate_retest_horizon_status_input_args(&args)?;
     validate_research_report_input_args(&args)?;
@@ -924,29 +1054,8 @@ where
 }
 
 pub async fn run(args: Args) -> AppResult<RunSummary> {
-    if args.run_paper_watch_live_cycle {
-        return run_paper_watch_live_cycle_mode(&args).await;
-    }
-    if args.run_retest_refresh_cycle {
-        return run_retest_refresh_cycle_mode(&args).await;
-    }
-    if args.run_retest_refresh_cycle_from_latest_state {
-        return run_retest_refresh_cycle_from_latest_state_mode(&args).await;
-    }
-    if args.run_shadow_cycle_from_latest_state {
-        return run_shadow_cycle_from_latest_state_mode(&args).await;
-    }
-    if args.build_retest_horizon_plan {
-        return build_retest_horizon_plan_mode(&args).await;
-    }
-    if args.build_retest_horizon_status {
-        return build_retest_horizon_status_mode(&args).await;
-    }
-    if args.run_retest_cycle_scheduler {
-        return run_retest_cycle_scheduler_mode(&args).await;
-    }
-    if args.build_focused_retest_manifest {
-        return build_focused_retest_manifest_mode(&args).await;
+    if let Some(summary) = run_direct_mode(&args).await? {
+        return Ok(summary);
     }
     if has_retest_horizon_status_input(&args) {
         let status = load_retest_horizon_status(&args).await?;
@@ -975,6 +1084,10 @@ pub async fn run(args: Args) -> AppResult<RunSummary> {
             paper_trade_summaries_created: 0,
             paper_trade_marks_created: 0,
             paper_watch_live_marks_created: 0,
+            paper_watch_observer_iterations: 0,
+            paper_watch_observer_snapshots_created: 0,
+            paper_watch_observer_active_candidates: 0,
+            paper_watch_observer_restored_live_marks: 0,
             portfolio_risk_reject_events_created: 0,
             portfolio_reduce_only_signals_created: 0,
             output_files: Vec::new(),
@@ -1007,6 +1120,10 @@ pub async fn run(args: Args) -> AppResult<RunSummary> {
             paper_trade_summaries_created: 0,
             paper_trade_marks_created: 0,
             paper_watch_live_marks_created: 0,
+            paper_watch_observer_iterations: 0,
+            paper_watch_observer_snapshots_created: 0,
+            paper_watch_observer_active_candidates: 0,
+            paper_watch_observer_restored_live_marks: 0,
             portfolio_risk_reject_events_created: 0,
             portfolio_reduce_only_signals_created: 0,
             output_files: Vec::new(),
@@ -1187,10 +1304,49 @@ pub async fn run(args: Args) -> AppResult<RunSummary> {
         paper_trade_summaries_created: paper_artifacts.summaries.len(),
         paper_trade_marks_created: paper_artifacts.marks.len(),
         paper_watch_live_marks_created: 0,
+        paper_watch_observer_iterations: 0,
+        paper_watch_observer_snapshots_created: 0,
+        paper_watch_observer_active_candidates: 0,
+        paper_watch_observer_restored_live_marks: 0,
         portfolio_risk_reject_events_created: report.portfolio_risk_reject_events.len(),
         portfolio_reduce_only_signals_created: report.portfolio_reduce_only_signals.len(),
         output_files,
     })
+}
+
+async fn run_direct_mode(args: &Args) -> AppResult<Option<RunSummary>> {
+    if args.run_paper_watch_live_cycle {
+        return run_paper_watch_live_cycle_mode(args).await.map(Some);
+    }
+    if args.run_paper_watch_observer {
+        return run_paper_watch_observer_mode(args).await.map(Some);
+    }
+    if args.run_retest_refresh_cycle {
+        return run_retest_refresh_cycle_mode(args).await.map(Some);
+    }
+    if args.run_retest_refresh_cycle_from_latest_state {
+        return run_retest_refresh_cycle_from_latest_state_mode(args)
+            .await
+            .map(Some);
+    }
+    if args.run_shadow_cycle_from_latest_state {
+        return run_shadow_cycle_from_latest_state_mode(args)
+            .await
+            .map(Some);
+    }
+    if args.build_retest_horizon_plan {
+        return build_retest_horizon_plan_mode(args).await.map(Some);
+    }
+    if args.build_retest_horizon_status {
+        return build_retest_horizon_status_mode(args).await.map(Some);
+    }
+    if args.run_retest_cycle_scheduler {
+        return run_retest_cycle_scheduler_mode(args).await.map(Some);
+    }
+    if args.build_focused_retest_manifest {
+        return build_focused_retest_manifest_mode(args).await.map(Some);
+    }
+    Ok(None)
 }
 
 async fn run_paper_watch_live_cycle_mode(args: &Args) -> AppResult<RunSummary> {
@@ -1227,6 +1383,206 @@ async fn run_paper_watch_live_cycle_mode(args: &Args) -> AppResult<RunSummary> {
         output_files,
         ..RunSummary::default()
     })
+}
+
+async fn run_paper_watch_observer_mode(args: &Args) -> AppResult<RunSummary> {
+    let observer_run_id = format!(
+        "paper_watch_observer_{}",
+        args.now_ms.unwrap_or_else(now_ms)
+    );
+    let mut state = PaperWatchObserverState::default();
+    let restored_mark_count = restore_paper_watch_observer_state(args, &mut state).await?;
+    let mut iteration = 0usize;
+    let mut total_new_marks = 0usize;
+    let mut snapshots_created = 0usize;
+    let mut latest_active_candidates: usize;
+    let mut output_files = Vec::new();
+
+    loop {
+        iteration += 1;
+        let iteration_now_ms = args.now_ms.unwrap_or_else(now_ms);
+        let candidates = load_paper_watch_observer_candidates(args).await?;
+        let active = active_candidates(&candidates, iteration_now_ms);
+        latest_active_candidates = active.len();
+        let ticks = if active.is_empty() {
+            Vec::new()
+        } else {
+            read_market_live_ticks_from_nats(&paper_watch_observer_nats_config(args)?).await?
+        };
+        let new_marks = state.ingest_ticks(&active, &ticks);
+        total_new_marks += new_marks.len();
+        output_files.extend(
+            write_paper_watch_observer_live_marks(args, &new_marks, iteration_now_ms).await?,
+        );
+
+        let snapshot = state.snapshot(
+            &observer_run_id,
+            iteration,
+            iteration_now_ms,
+            &candidates,
+            &new_marks,
+        );
+        output_files
+            .push(write_paper_watch_observer_snapshot(args, &snapshot, iteration_now_ms).await?);
+        snapshots_created += 1;
+
+        if args.paper_watch_observer_max_iterations > 0
+            && iteration >= args.paper_watch_observer_max_iterations
+        {
+            break;
+        }
+        sleep(Duration::from_secs(args.paper_watch_observer_poll_secs)).await;
+    }
+
+    Ok(RunSummary {
+        paper_watch_live_marks_created: total_new_marks,
+        paper_watch_observer_iterations: iteration,
+        paper_watch_observer_snapshots_created: snapshots_created,
+        paper_watch_observer_active_candidates: latest_active_candidates,
+        paper_watch_observer_restored_live_marks: restored_mark_count,
+        output_files,
+        ..RunSummary::default()
+    })
+}
+
+async fn restore_paper_watch_observer_state(
+    args: &Args,
+    state: &mut PaperWatchObserverState,
+) -> AppResult<usize> {
+    let Some(bucket) = args.output_s3_bucket.as_deref() else {
+        return Ok(0);
+    };
+    let keys = discover_paper_watch_live_mark_keys_from_s3(
+        bucket,
+        &args.paper_watch_live_mark_s3_prefix,
+        args.paper_watch_live_mark_read_limit,
+        args.paper_watch_live_mark_scan_limit,
+    )
+    .await?;
+    if keys.is_empty() {
+        return Ok(0);
+    }
+    let marks = read_paper_watch_live_marks_from_s3(bucket, &keys).await?;
+    let restored_count = marks.len();
+    state.restore_marks(&marks);
+    Ok(restored_count)
+}
+
+async fn load_paper_watch_observer_candidates(
+    args: &Args,
+) -> AppResult<Vec<crate::model::PaperWatchCandidate>> {
+    if let Some(path) = args.paper_watch_candidate_file.as_deref() {
+        return read_paper_watch_candidates(path);
+    }
+    let Some(bucket) = args.paper_watch_candidate_s3_bucket.as_deref() else {
+        return Err(AppError::config(
+            "--run-paper-watch-observer requires --paper-watch-candidate-s3-bucket",
+        ));
+    };
+    let keys = discover_paper_watch_candidate_keys_from_s3(
+        bucket,
+        &args.paper_watch_candidate_s3_prefix,
+        args.paper_watch_observer_read_limit,
+        args.paper_watch_observer_scan_limit,
+    )
+    .await?;
+    let mut by_id = BTreeMap::new();
+    for key in keys {
+        for candidate in read_paper_watch_candidates_from_s3(bucket, &key).await? {
+            by_id
+                .entry(candidate.paper_watch_candidate_id.clone())
+                .or_insert(candidate);
+        }
+    }
+    Ok(by_id.into_values().collect())
+}
+
+fn paper_watch_observer_nats_config(args: &Args) -> AppResult<MarketLiveNatsConfig> {
+    let Some(url) = args.market_live_nats_url.as_deref() else {
+        return Err(AppError::config(
+            "--run-paper-watch-observer requires --market-live-nats-url",
+        ));
+    };
+    let consumer = if args.market_live_nats_consumer == DEFAULT_MARKET_LIVE_NATS_CONSUMER {
+        "research-paper-watch-observer".to_owned()
+    } else {
+        args.market_live_nats_consumer.clone()
+    };
+    let deliver_policy =
+        if args.market_live_nats_deliver_policy == DEFAULT_MARKET_LIVE_NATS_DELIVER_POLICY {
+            "new".to_owned()
+        } else {
+            args.market_live_nats_deliver_policy.clone()
+        };
+    Ok(MarketLiveNatsConfig {
+        url: url.to_owned(),
+        stream: args.market_live_nats_stream.clone(),
+        subject: args.market_live_nats_subject.clone(),
+        consumer,
+        deliver_policy,
+        batch_size: args.market_live_nats_batch_size,
+        max_messages: args.market_live_nats_max_messages,
+        ack_wait_secs: args.market_live_nats_ack_wait_secs,
+        delete_consumer_after_read: false,
+    })
+}
+
+async fn write_paper_watch_observer_live_marks(
+    args: &Args,
+    marks: &[crate::model::PaperWatchLiveMark],
+    output_partition_at_ms: i64,
+) -> AppResult<Vec<String>> {
+    if marks.is_empty() {
+        return Ok(Vec::new());
+    }
+    if let Some(output_dir) = args.output_dir.as_deref() {
+        return write_paper_watch_live_marks(output_dir, marks, output_partition_at_ms).map(
+            |paths| {
+                paths
+                    .into_iter()
+                    .map(|path| path.display().to_string())
+                    .collect()
+            },
+        );
+    }
+    let Some(bucket) = args.output_s3_bucket.as_deref() else {
+        return Ok(Vec::new());
+    };
+    write_paper_watch_live_marks_to_s3(
+        bucket,
+        &args.paper_watch_live_mark_s3_prefix,
+        marks,
+        output_partition_at_ms,
+    )
+    .await
+}
+
+async fn write_paper_watch_observer_snapshot<T: Serialize>(
+    args: &Args,
+    snapshot: &T,
+    output_partition_at_ms: i64,
+) -> AppResult<String> {
+    if let Some(output_dir) = args.output_dir.as_deref() {
+        let path = output_dir.join(format!(
+            "paper-watch-observer-state/schema={}/run_id={}/state.json",
+            PAPER_WATCH_OBSERVER_SNAPSHOT_SCHEMA_VERSION, output_partition_at_ms
+        ));
+        return write_pretty_json_file(&path, snapshot).map(|path| path.display().to_string());
+    }
+    let Some(bucket) = args.output_s3_bucket.as_deref() else {
+        return Err(AppError::config(
+            "--run-paper-watch-observer requires --output-dir or --output-s3-bucket",
+        ));
+    };
+    write_paper_watch_observer_snapshot_to_s3(
+        bucket,
+        args.output_s3_prefix
+            .as_deref()
+            .unwrap_or(DEFAULT_PAPER_WATCH_OBSERVER_OUTPUT_PREFIX),
+        snapshot,
+        output_partition_at_ms,
+    )
+    .await
 }
 
 async fn write_retest_cycle_source_state_output(
@@ -1365,6 +1721,10 @@ async fn build_shadow_cycle_decision_mode(args: &Args) -> AppResult<RunSummary> 
         paper_trade_summaries_created: 0,
         paper_trade_marks_created: 0,
         paper_watch_live_marks_created: 0,
+        paper_watch_observer_iterations: 0,
+        paper_watch_observer_snapshots_created: 0,
+        paper_watch_observer_active_candidates: 0,
+        paper_watch_observer_restored_live_marks: 0,
         portfolio_risk_reject_events_created: 0,
         portfolio_reduce_only_signals_created: 0,
         output_files,
@@ -1425,6 +1785,10 @@ async fn build_retest_horizon_plan_mode(args: &Args) -> AppResult<RunSummary> {
         paper_trade_summaries_created: 0,
         paper_trade_marks_created: 0,
         paper_watch_live_marks_created: 0,
+        paper_watch_observer_iterations: 0,
+        paper_watch_observer_snapshots_created: 0,
+        paper_watch_observer_active_candidates: 0,
+        paper_watch_observer_restored_live_marks: 0,
         portfolio_risk_reject_events_created: 0,
         portfolio_reduce_only_signals_created: 0,
         output_files,
@@ -1537,6 +1901,10 @@ async fn run_retest_refresh_cycle_mode(args: &Args) -> AppResult<RunSummary> {
         paper_trade_summaries_created: 0,
         paper_trade_marks_created: 0,
         paper_watch_live_marks_created: 0,
+        paper_watch_observer_iterations: 0,
+        paper_watch_observer_snapshots_created: 0,
+        paper_watch_observer_active_candidates: 0,
+        paper_watch_observer_restored_live_marks: 0,
         portfolio_risk_reject_events_created: 0,
         portfolio_reduce_only_signals_created: 0,
         output_files,
@@ -1610,6 +1978,10 @@ async fn build_retest_horizon_status_mode(args: &Args) -> AppResult<RunSummary> 
         paper_trade_summaries_created: 0,
         paper_trade_marks_created: 0,
         paper_watch_live_marks_created: 0,
+        paper_watch_observer_iterations: 0,
+        paper_watch_observer_snapshots_created: 0,
+        paper_watch_observer_active_candidates: 0,
+        paper_watch_observer_restored_live_marks: 0,
         portfolio_risk_reject_events_created: 0,
         portfolio_reduce_only_signals_created: 0,
         output_files,
@@ -1711,6 +2083,10 @@ async fn build_focused_retest_manifest_from_status(
         paper_trade_summaries_created: 0,
         paper_trade_marks_created: 0,
         paper_watch_live_marks_created: 0,
+        paper_watch_observer_iterations: 0,
+        paper_watch_observer_snapshots_created: 0,
+        paper_watch_observer_active_candidates: 0,
+        paper_watch_observer_restored_live_marks: 0,
         portfolio_risk_reject_events_created: 0,
         portfolio_reduce_only_signals_created: 0,
         output_files,
@@ -1745,6 +2121,10 @@ fn retest_scheduler_summary(
         paper_trade_summaries_created: 0,
         paper_trade_marks_created: 0,
         paper_watch_live_marks_created: 0,
+        paper_watch_observer_iterations: 0,
+        paper_watch_observer_snapshots_created: 0,
+        paper_watch_observer_active_candidates: 0,
+        paper_watch_observer_restored_live_marks: 0,
         portfolio_risk_reject_events_created: 0,
         portfolio_reduce_only_signals_created: 0,
         output_files: Vec::new(),
@@ -3456,6 +3836,84 @@ fn validate_paper_watch_live_cycle_args(args: &Args) -> AppResult<()> {
     Ok(())
 }
 
+fn validate_paper_watch_observer_args(args: &Args) -> AppResult<()> {
+    let has_other_mode = [
+        args.build_shadow_cycle_decision,
+        args.run_shadow_cycle_from_latest_state,
+        args.build_retest_horizon_plan,
+        args.run_retest_refresh_cycle,
+        args.run_retest_refresh_cycle_from_latest_state,
+        args.run_retest_cycle_scheduler,
+        args.build_retest_horizon_status,
+        args.build_focused_retest_manifest,
+        args.run_paper_watch_live_cycle,
+    ]
+    .into_iter()
+    .any(|enabled| enabled);
+    if has_other_mode {
+        return Err(AppError::config(
+            "use --run-paper-watch-observer separately from research/retest/shadow modes",
+        ));
+    }
+    if args.paper_watch_candidate_file.is_some() && args.paper_watch_candidate_s3_bucket.is_some() {
+        return Err(AppError::config(
+            "use either --paper-watch-candidate-file or --paper-watch-candidate-s3-bucket, not both",
+        ));
+    }
+    if args.paper_watch_candidate_file.is_none() && args.paper_watch_candidate_s3_bucket.is_none() {
+        return Err(AppError::config(
+            "--run-paper-watch-observer requires --paper-watch-candidate-s3-bucket or --paper-watch-candidate-file",
+        ));
+    }
+    if args.paper_watch_candidate_s3_key.is_some() {
+        return Err(AppError::config(
+            "--run-paper-watch-observer uses --paper-watch-candidate-s3-prefix, not --paper-watch-candidate-s3-key",
+        ));
+    }
+    if let Some(path) = args.paper_watch_candidate_file.as_deref()
+        && !path.is_absolute()
+    {
+        return Err(AppError::config(
+            "RESEARCH_PAPER_WATCH_CANDIDATE_FILE must be an absolute path",
+        ));
+    }
+    if !args
+        .paper_watch_candidate_s3_prefix
+        .starts_with("paper-watch-candidate/")
+    {
+        return Err(AppError::config(
+            "--paper-watch-candidate-s3-prefix must start with paper-watch-candidate/",
+        ));
+    }
+    if !args
+        .paper_watch_live_mark_s3_prefix
+        .starts_with("paper-watch-live-mark/")
+    {
+        return Err(AppError::config(
+            "--paper-watch-live-mark-s3-prefix must start with paper-watch-live-mark/",
+        ));
+    }
+    validate_market_live_url(args)?;
+    if args.output_dir.is_some() && args.output_s3_bucket.is_some() {
+        return Err(AppError::config(
+            "use either --output-dir or --output-s3-bucket, not both",
+        ));
+    }
+    if args.output_dir.is_none() && args.output_s3_bucket.is_none() {
+        return Err(AppError::config(
+            "--run-paper-watch-observer requires --output-dir or --output-s3-bucket",
+        ));
+    }
+    if let Some(prefix) = args.output_s3_prefix.as_deref()
+        && !prefix.starts_with("paper-watch-observer-state/")
+    {
+        return Err(AppError::config(
+            "--output-s3-prefix must start with paper-watch-observer-state/ in observer mode",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_paper_watch_live_cycle_mode_is_isolated(args: &Args) -> AppResult<()> {
     let has_other_mode = [
         args.build_shadow_cycle_decision,
@@ -3525,6 +3983,10 @@ fn validate_market_live_tick_input(args: &Args) -> AppResult<()> {
             "--run-paper-watch-live-cycle requires market live tick file or NATS url",
         ));
     }
+    validate_market_live_url(args)
+}
+
+fn validate_market_live_url(args: &Args) -> AppResult<()> {
     if let Some(url) = args.market_live_nats_url.as_deref()
         && !url.starts_with("nats://")
     {
@@ -3999,6 +4461,13 @@ fn env_usize(name: &str, fallback: usize) -> AppResult<usize> {
     parse_positive_usize(name, &raw)
 }
 
+fn env_usize_allow_zero(name: &str, fallback: usize) -> AppResult<usize> {
+    let Some(raw) = env_string(name) else {
+        return Ok(fallback);
+    };
+    parse_non_negative_usize(name, &raw)
+}
+
 fn env_u64(name: &str, fallback: u64) -> AppResult<u64> {
     let Some(raw) = env_string(name) else {
         return Ok(fallback);
@@ -4016,6 +4485,11 @@ fn parse_positive_usize(name: &str, raw: &str) -> AppResult<usize> {
         )));
     }
     Ok(value)
+}
+
+fn parse_non_negative_usize(name: &str, raw: &str) -> AppResult<usize> {
+    raw.parse::<usize>()
+        .map_err(|_| AppError::config(format!("{name} must be a non-negative integer")))
 }
 
 fn parse_positive_u64(name: &str, raw: &str) -> AppResult<u64> {
@@ -4121,6 +4595,19 @@ paper_watch_live_mark_v1 with live/order safety flags disabled:
   --market-live-nats-url nats://<private-nats-host>:4222
   --output-s3-bucket nangman-crypto-dev-research-<account-suffix>
   --output-s3-prefix paper-watch-live-mark/schema=paper_watch_live_mark_v1
+
+Paper-watch observer is the long-running service mode. It repeatedly reads the
+latest paper-watch candidates, consumes MARKET_LIVE ticks through a durable NATS
+consumer, writes live marks, and writes observer snapshots. It is still paper-only:
+  --run-paper-watch-observer
+  --paper-watch-candidate-s3-bucket nangman-crypto-dev-research-<account-suffix>
+  --paper-watch-candidate-s3-prefix paper-watch-candidate/schema=paper_watch_candidate_v1
+  --market-live-nats-url nats://<private-nats-host>:4222
+  --output-s3-bucket nangman-crypto-dev-research-<account-suffix>
+  --output-s3-prefix paper-watch-observer-state/schema=paper_watch_observer_snapshot_v1
+  --paper-watch-live-mark-s3-prefix paper-watch-live-mark/schema=paper_watch_live_mark_v1
+  --paper-watch-observer-poll-secs 5
+  --paper-watch-observer-max-iterations 1  # smoke test only; omit for service mode
 
 The focused manifest can also be written to S3 to wake the existing dispatcher:
   --build-focused-retest-manifest

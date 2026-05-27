@@ -36,6 +36,30 @@ pub struct MarketLiveNatsConfig {
     pub delete_consumer_after_read: bool,
 }
 
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PaperWatchLiveEntryBook {
+    entry_by_watch_candidate_market: BTreeMap<String, f64>,
+}
+
+impl PaperWatchLiveEntryBook {
+    pub fn restore_entry(
+        &mut self,
+        paper_watch_candidate_id: &str,
+        venue: &str,
+        quote_asset: &str,
+        entry_price: f64,
+    ) {
+        if valid_mark_price(Some(entry_price)).is_none() {
+            return;
+        }
+        let key =
+            paper_watch_market_entry_key_from_parts(paper_watch_candidate_id, venue, quote_asset);
+        self.entry_by_watch_candidate_market
+            .entry(key)
+            .or_insert(entry_price);
+    }
+}
+
 pub fn read_paper_watch_candidates(path: &Path) -> AppResult<Vec<PaperWatchCandidate>> {
     read_json_array_or_jsonl(path)
 }
@@ -97,6 +121,15 @@ pub fn build_paper_watch_live_marks(
     candidates: &[PaperWatchCandidate],
     ticks: &[MarketLiveTick],
 ) -> Vec<PaperWatchLiveMark> {
+    let mut entry_book = PaperWatchLiveEntryBook::default();
+    build_paper_watch_live_marks_with_entry_book(candidates, ticks, &mut entry_book)
+}
+
+pub fn build_paper_watch_live_marks_with_entry_book(
+    candidates: &[PaperWatchCandidate],
+    ticks: &[MarketLiveTick],
+    entry_book: &mut PaperWatchLiveEntryBook,
+) -> Vec<PaperWatchLiveMark> {
     let mut candidates_by_symbol: BTreeMap<String, Vec<&PaperWatchCandidate>> = BTreeMap::new();
     for candidate in candidates {
         if !candidate.safety.paper_only
@@ -126,7 +159,6 @@ pub fn build_paper_watch_live_marks(
             ))
     });
 
-    let mut entry_by_watch_candidate_market = BTreeMap::<String, f64>::new();
     let mut marks = Vec::new();
     for tick in &ordered_ticks {
         if tick.schema_version != MARKET_LIVE_TICK_SCHEMA_VERSION {
@@ -142,7 +174,8 @@ pub fn build_paper_watch_live_marks(
         };
         for candidate in matched_candidates {
             let entry_key = paper_watch_market_entry_key(candidate, tick);
-            let entry_price = *entry_by_watch_candidate_market
+            let entry_price = *entry_book
+                .entry_by_watch_candidate_market
                 .entry(entry_key)
                 .or_insert(current_price);
             marks.push(build_mark(candidate, tick, entry_price, current_price));
@@ -152,11 +185,23 @@ pub fn build_paper_watch_live_marks(
 }
 
 fn paper_watch_market_entry_key(candidate: &PaperWatchCandidate, tick: &MarketLiveTick) -> String {
+    paper_watch_market_entry_key_from_parts(
+        &candidate.paper_watch_candidate_id,
+        &tick.venue,
+        &tick.quote_asset,
+    )
+}
+
+fn paper_watch_market_entry_key_from_parts(
+    paper_watch_candidate_id: &str,
+    venue: &str,
+    quote_asset: &str,
+) -> String {
     format!(
         "{}:{}:{}",
-        candidate.paper_watch_candidate_id,
-        tick.venue.to_ascii_lowercase(),
-        tick.quote_asset.to_ascii_uppercase()
+        paper_watch_candidate_id,
+        venue.to_ascii_lowercase(),
+        quote_asset.to_ascii_uppercase()
     )
 }
 
@@ -447,6 +492,22 @@ mod tests {
                 .reason_codes
                 .contains(&"quote_asset=USDT".to_owned())
         );
+    }
+
+    #[test]
+    fn live_entry_book_restores_existing_market_entry() {
+        let candidates = vec![candidate("watch_1", "DOGE")];
+        let mut book = PaperWatchLiveEntryBook::default();
+        book.restore_entry("watch_1", "binance", "USDT", 0.100);
+        let mut tick = tick("tick_doge_binance_2", "DOGE", 1_020, 0.102);
+        tick.venue = "binance".to_owned();
+        tick.quote_asset = "USDT".to_owned();
+
+        let marks = build_paper_watch_live_marks_with_entry_book(&candidates, &[tick], &mut book);
+
+        assert_eq!(marks.len(), 1);
+        assert_eq!(marks[0].entry_mark_price, 0.100);
+        assert!((marks[0].net_return_bps - 200.0).abs() < 0.0001);
     }
 
     #[test]

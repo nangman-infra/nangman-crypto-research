@@ -73,6 +73,48 @@ batch size: 100
 max messages per cycle: 500
 ```
 
+## Paper-Watch Observer Service
+
+`--run-paper-watch-live-cycle`은 한 번 실행하고 끝나는 검증용 task입니다.
+상시 모의 관찰은 `--run-paper-watch-observer`로 실행합니다. 이 모드는 최근
+`paper_watch_candidate_v1` 후보를 S3에서 반복해서 읽고, `MARKET_LIVE` NATS
+stream에서 Binance/Upbit live tick을 계속 받아 `paper_watch_live_mark_v1`과
+`paper_watch_observer_snapshot_v1`을 누적합니다.
+
+이 모드도 실제 주문을 만들지 않습니다. 안전 플래그는 계속
+`live_enabled=false`, `order_execution_enabled=false`,
+`execution_approval_emitted=false`입니다.
+
+```bash
+cd /Volumes/WD/Developments/nangman-crypto/apps/research-app
+
+cargo run -- \
+  --run-paper-watch-observer \
+  --paper-watch-candidate-s3-bucket nangman-crypto-dev-research-<account-suffix> \
+  --paper-watch-candidate-s3-prefix paper-watch-candidate/schema=paper_watch_candidate_v1 \
+  --market-live-nats-url nats://<private-nats-host>:4222 \
+  --output-s3-bucket nangman-crypto-dev-research-<account-suffix> \
+  --output-s3-prefix paper-watch-observer-state/schema=paper_watch_observer_snapshot_v1 \
+  --paper-watch-live-mark-s3-prefix paper-watch-live-mark/schema=paper_watch_live_mark_v1 \
+  --paper-watch-observer-poll-secs 5
+```
+
+Smoke test처럼 한 번만 돌릴 때는 다음 옵션을 붙입니다.
+
+```bash
+--paper-watch-observer-max-iterations 1
+```
+
+운영 판단 기준:
+
+```text
+WAIT_FOR_LIVE_TICK: 아직 해당 후보의 실시간 tick이 없음
+WATCHING: 관찰 중이지만 아직 뚜렷한 양수 성과 없음
+WATCHING_POSITIVE: 관찰 중 양수 성과가 한 번 이상 나옴
+RISK_REVIEW: paper 관찰 중 -200 bps 이하 손실 구간 발생
+SHADOW_REVIEW_CANDIDATE: 목표 보유시간 구간에 도달했고 수익/손실 조건이 양호함
+```
+
 ## Mattermost Alerts
 
 `research-app` can emit human-readable Mattermost alerts for events that need
