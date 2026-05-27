@@ -395,6 +395,111 @@ mod tests {
         assert!(!marks[0].safety.order_execution_enabled);
     }
 
+    #[test]
+    fn target_window_marks_open_before_force_flat_due() {
+        let mut candidate = candidate("watch_1", "SUI");
+        candidate.created_at_ms = 0;
+        candidate.target_max_holding_hours = 1;
+        candidate.absolute_max_holding_hours = 3;
+        let ticks = vec![tick("tick_sui_1", "SUI", 2 * 60 * 60 * 1000, 1.0)];
+
+        let marks = build_paper_watch_live_marks(&[candidate], &ticks);
+
+        assert_eq!(marks[0].lifecycle_state, "target_holding_window_open");
+        assert!(
+            marks[0]
+                .reason_codes
+                .contains(&"target_holding_window_open".to_owned())
+        );
+        assert!(!marks[0].safety.execution_approval_emitted);
+    }
+
+    #[test]
+    fn unsafe_candidates_and_invalid_ticks_are_ignored() {
+        let mut unsafe_candidate = candidate("watch_unsafe", "SUI");
+        unsafe_candidate.safety.live_enabled = true;
+        let mut invalid_tick = tick("tick_bad", "SUI", 1_000, 1.0);
+        invalid_tick.schema_version = "old".to_owned();
+        let mut missing_price = tick("tick_missing_price", "SUI", 1_100, 1.0);
+        missing_price.mark_price = None;
+
+        let marks = build_paper_watch_live_marks(
+            &[unsafe_candidate, candidate("watch_safe", "TON")],
+            &[
+                invalid_tick,
+                missing_price,
+                tick("tick_ton", "TON", 1_200, 2.0),
+            ],
+        );
+
+        assert_eq!(marks.len(), 1);
+        assert_eq!(marks[0].paper_watch_candidate_id, "watch_safe");
+    }
+
+    #[test]
+    fn json_array_jsonl_and_single_object_inputs_parse() {
+        let first = tick("tick_1", "SUI", 1_000, 1.0);
+        let second = tick("tick_2", "TON", 1_100, 2.0);
+        let array_bytes = serde_json::to_vec(&vec![first.clone(), second.clone()]).unwrap();
+        let jsonl_bytes = format!(
+            "{}\n{}\n",
+            serde_json::to_string(&first).unwrap(),
+            serde_json::to_string(&second).unwrap()
+        );
+        let object_bytes = serde_json::to_vec(&first).unwrap();
+
+        assert_eq!(
+            read_json_array_or_jsonl_bytes::<MarketLiveTick>("array", &array_bytes)
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            read_json_array_or_jsonl_bytes::<MarketLiveTick>("jsonl", jsonl_bytes.as_bytes())
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            read_json_array_or_jsonl_bytes::<MarketLiveTick>("object", &object_bytes)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(read_json_array_or_jsonl_bytes::<MarketLiveTick>("empty", b" \n").is_err());
+    }
+
+    #[test]
+    fn nats_config_and_tick_validation_reject_bad_inputs() {
+        let mut config = MarketLiveNatsConfig {
+            url: "http://nats.example:4222".to_owned(),
+            stream: "MARKET_LIVE".to_owned(),
+            subject: "market_live_tick.created.>".to_owned(),
+            consumer: "research-paper-watch-live".to_owned(),
+            deliver_policy: "last_per_subject".to_owned(),
+            batch_size: 100,
+            max_messages: 500,
+            ack_wait_secs: 30,
+        };
+        assert!(validate_nats_config(&config).is_err());
+        config.url = "nats://127.0.0.1:4222".to_owned();
+        config.batch_size = 0;
+        assert!(validate_nats_config(&config).is_err());
+
+        assert!(deliver_policy("all").is_ok());
+        assert!(deliver_policy("new").is_ok());
+        assert!(deliver_policy("last").is_ok());
+        assert!(deliver_policy("last_per_subject").is_ok());
+        assert!(deliver_policy("unsupported").is_err());
+
+        let mut bad_tick = tick("tick_bad", "SUI", 1_000, 1.0);
+        bad_tick.event_id.clear();
+        assert!(validate_tick(&bad_tick).is_err());
+        bad_tick.event_id = "tick_bad".to_owned();
+        bad_tick.mark_price = Some(f64::NAN);
+        assert!(validate_tick(&bad_tick).is_err());
+    }
+
     fn candidate(id: &str, symbol: &str) -> PaperWatchCandidate {
         PaperWatchCandidate {
             paper_watch_candidate_id: id.to_owned(),

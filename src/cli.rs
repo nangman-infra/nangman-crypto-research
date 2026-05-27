@@ -3391,7 +3391,15 @@ fn has_research_report_input(args: &Args) -> bool {
 }
 
 fn validate_paper_watch_live_cycle_args(args: &Args) -> AppResult<()> {
-    let mode_count = [
+    validate_paper_watch_live_cycle_mode_is_isolated(args)?;
+    validate_paper_watch_candidate_input(args)?;
+    validate_market_live_tick_input(args)?;
+    validate_paper_watch_live_cycle_output(args)?;
+    Ok(())
+}
+
+fn validate_paper_watch_live_cycle_mode_is_isolated(args: &Args) -> AppResult<()> {
+    let has_other_mode = [
         args.build_shadow_cycle_decision,
         args.run_shadow_cycle_from_latest_state,
         args.build_retest_horizon_plan,
@@ -3402,13 +3410,16 @@ fn validate_paper_watch_live_cycle_args(args: &Args) -> AppResult<()> {
         args.build_focused_retest_manifest,
     ]
     .into_iter()
-    .filter(|enabled| *enabled)
-    .count();
-    if mode_count > 0 {
+    .any(|enabled| enabled);
+    if has_other_mode {
         return Err(AppError::config(
             "use --run-paper-watch-live-cycle separately from research/retest/shadow modes",
         ));
     }
+    Ok(())
+}
+
+fn validate_paper_watch_candidate_input(args: &Args) -> AppResult<()> {
     if args.paper_watch_candidate_file.is_some()
         && (args.paper_watch_candidate_s3_bucket.is_some()
             || args.paper_watch_candidate_s3_key.is_some())
@@ -3435,6 +3446,10 @@ fn validate_paper_watch_live_cycle_args(args: &Args) -> AppResult<()> {
             "RESEARCH_PAPER_WATCH_CANDIDATE_FILE must be an absolute path",
         ));
     }
+    Ok(())
+}
+
+fn validate_market_live_tick_input(args: &Args) -> AppResult<()> {
     if let Some(path) = args.market_live_tick_file.as_deref()
         && !path.is_absolute()
     {
@@ -3459,6 +3474,10 @@ fn validate_paper_watch_live_cycle_args(args: &Args) -> AppResult<()> {
             "--market-live-nats-url must start with nats://",
         ));
     }
+    Ok(())
+}
+
+fn validate_paper_watch_live_cycle_output(args: &Args) -> AppResult<()> {
     if args.output_dir.is_some() && args.output_s3_bucket.is_some() {
         return Err(AppError::config(
             "use either --output-dir or --output-s3-bucket, not both",
