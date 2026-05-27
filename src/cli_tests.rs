@@ -46,6 +46,7 @@ fn default_args() -> Args {
         run_retest_cycle_scheduler: false,
         build_retest_horizon_status: false,
         build_focused_retest_manifest: false,
+        run_paper_watch_live_cycle: false,
         shadow_cycle_decision_file: None,
         shadow_cycle_decision_output_file: None,
         shadow_cycle_latest_l1_as_of_ms: None,
@@ -86,6 +87,19 @@ fn default_args() -> Args {
         oss_adapter_run_s3_keys: Vec::new(),
         shadow_validation_run_s3_bucket: None,
         shadow_validation_run_s3_keys: Vec::new(),
+        paper_watch_candidate_file: None,
+        paper_watch_candidate_s3_bucket: None,
+        paper_watch_candidate_s3_key: None,
+        market_live_tick_file: None,
+        market_live_nats_url: None,
+        market_live_nats_stream: crate::paper_live::DEFAULT_MARKET_LIVE_NATS_STREAM.to_owned(),
+        market_live_nats_subject: crate::paper_live::DEFAULT_MARKET_LIVE_NATS_SUBJECT.to_owned(),
+        market_live_nats_consumer: crate::paper_live::DEFAULT_MARKET_LIVE_NATS_CONSUMER.to_owned(),
+        market_live_nats_deliver_policy: crate::paper_live::DEFAULT_MARKET_LIVE_NATS_DELIVER_POLICY
+            .to_owned(),
+        market_live_nats_batch_size: crate::paper_live::DEFAULT_MARKET_LIVE_NATS_BATCH_SIZE,
+        market_live_nats_max_messages: crate::paper_live::DEFAULT_MARKET_LIVE_NATS_MAX_MESSAGES,
+        market_live_nats_ack_wait_secs: crate::paper_live::DEFAULT_MARKET_LIVE_NATS_ACK_WAIT_SECS,
         historical_replay_run_s3_bucket: None,
         historical_replay_run_s3_keys: Vec::new(),
         historical_replay_run_index_s3_bucket: None,
@@ -169,6 +183,37 @@ fn bundle_json() -> Value {
         "storage_uri": "s3://bucket/key",
         "checksum": "checksum",
         "idempotency_key": "idem_001"
+    })
+}
+
+fn market_live_tick_json(
+    event_id: &str,
+    symbol: &str,
+    timestamp_ms: i64,
+    mark_price: f64,
+) -> Value {
+    json!({
+        "schema_version": "market_live_tick_v1",
+        "event_id": event_id,
+        "producer_run_id": "market_run_001",
+        "venue": "binance",
+        "source_role": "reference",
+        "market_type": "spot",
+        "event_type": "trade",
+        "symbol_native": format!("{symbol}USDT"),
+        "symbol_canonical": symbol,
+        "base_asset": symbol,
+        "quote_asset": "USDT",
+        "exchange_timestamp_ms": timestamp_ms,
+        "ingest_timestamp_ms": timestamp_ms + 10,
+        "latency_ms": 10,
+        "sequence_id": event_id,
+        "sequence_tag": "trade_id",
+        "price_source": "last_price",
+        "last_price": mark_price,
+        "mark_price": mark_price,
+        "quantity": 1.0,
+        "raw_payload_sha256": "sha256:test"
     })
 }
 
@@ -2811,6 +2856,100 @@ async fn positive_retest_creates_paper_watch_without_live_or_order_approval() {
             "paper_only_no_order_execution"
         ])
     );
+}
+
+#[tokio::test]
+async fn paper_watch_live_cycle_marks_live_ticks_without_order_approval() {
+    let root = test_root("paper-watch-live-cycle");
+    let candidates_file = root.join("paper-watch-candidates.json");
+    let ticks_file = root.join("market-live-ticks.json");
+    let output = root.join("out");
+
+    write_json(
+        &candidates_file,
+        &json!([{
+            "paper_watch_candidate_id": "watch_001",
+            "candidate_id": "cand_001",
+            "candidate_lifecycle_key": "cand_001:v1",
+            "symbol_canonical": "SUI",
+            "source_research_run_id": "research_run_001",
+            "source_research_packet_id": "packet_001",
+            "source_research_bias": "RETEST_BIAS",
+            "historical_survival_band": "stable",
+            "admission_reason_codes": ["retest_positive_watch_admitted"],
+            "blocked_promotion_reason_codes": ["needs_forward_observation"],
+            "replay_sample_summary": {
+                "research_aggregate_key": "agg_001",
+                "replay_run_count": 10,
+                "completed_count": 5,
+                "positive_net_count": 3,
+                "non_positive_net_count": 2,
+                "missing_market_replay_data_count": 0,
+                "insufficient_evidence_count": 0,
+                "effective_completed_sample_weight": 5.0,
+                "weighted_mean_net_after_cost_bps": 12.5,
+                "weighted_profit_factor_ppm": 1200000
+            },
+            "expected_cost_profile": {
+                "fee_model_version": "fee",
+                "slippage_model_version": "slippage",
+                "estimated_cost_bps": 8.0,
+                "cost_stressed_mean_net_after_cost_bps": 4.5
+            },
+            "expected_risk_profile": {
+                "survival_band": "stable",
+                "max_drawdown_band": "low",
+                "positive_net_count": 3,
+                "non_positive_net_count": 2
+            },
+            "target_max_holding_hours": 24,
+            "absolute_max_holding_hours": 72,
+            "force_flat_policy": "paper_watch_only_no_order_execution",
+            "paper_start_recommendation": "start_forward_paper_watch",
+            "safety": {
+                "paper_only": true,
+                "live_enabled": false,
+                "order_execution_enabled": false,
+                "execution_approval_emitted": false
+            },
+            "created_at_ms": 1_000,
+            "schema_version": "paper_watch_candidate_v1"
+        }]),
+    );
+    write_json(
+        &ticks_file,
+        &json!([
+            market_live_tick_json("tick_001", "SUI", 2_000, 1.0),
+            market_live_tick_json("tick_002", "ETH", 2_100, 10.0),
+            market_live_tick_json("tick_003", "SUI", 2_200, 1.03)
+        ]),
+    );
+
+    let summary = run(Args {
+        run_paper_watch_live_cycle: true,
+        paper_watch_candidate_file: Some(candidates_file),
+        market_live_tick_file: Some(ticks_file),
+        output_dir: Some(output),
+        now_ms: Some(120_000_000),
+        ..default_args()
+    })
+    .await
+    .expect("paper watch live cycle succeeds");
+
+    assert_eq!(summary.paper_watch_live_marks_created, 2);
+    let mark_file = output_file_containing(&summary, "/paper-watch-live-mark/");
+    let mark_text = fs::read_to_string(mark_file).expect("paper watch mark output exists");
+    assert!(!mark_text.contains("EXECUTION_APPROVED"));
+    assert!(!mark_text.contains("LIVE_READY"));
+    let marks = mark_text
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("mark json parses"))
+        .collect::<Vec<_>>();
+    assert_eq!(marks[0]["safety"]["paper_only"], json!(true));
+    assert_eq!(marks[0]["safety"]["live_enabled"], json!(false));
+    assert_eq!(marks[0]["safety"]["order_execution_enabled"], json!(false));
+    assert_eq!(marks[0]["net_return_bps"], json!(0.0));
+    assert_eq!(marks[1]["source_market_live_event_id"], json!("tick_003"));
 }
 
 #[tokio::test]

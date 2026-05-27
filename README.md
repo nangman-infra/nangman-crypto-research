@@ -15,6 +15,8 @@ input candidate bundle or research_input_manifest_v1
   -> research_run_report_v1
   -> research_aggregate_registry_record_v1
   -> optional shadow_validation_run_v1
+  -> optional paper_watch_candidate_v1
+  -> optional paper_watch_live_mark_v1 from MARKET_LIVE
 ```
 
 ## Local Run
@@ -38,6 +40,37 @@ Optional historical replay input:
 ```bash
 --historical-replay-run-file /Volumes/WD/Developments/nangman-crypto/data/reports/research-local/replay-run/schema=replay_run_v1/dt=2026-05-09/hour=00/research_run_report_id=.../part-000001.jsonl
 --historical-replay-run-index-file /Volumes/WD/Developments/nangman-crypto/data/reports/research-local/replay-run-index/schema=replay_run_index_v1/dt=2026-05-09/hour=00/research_run_report_id=.../part-000001.jsonl
+```
+
+## Paper-Watch Live Cycle
+
+`paper_watch_candidate_v1`은 실거래 후보가 아니라 forward 모의 관측 후보입니다.
+`research-app`은 `MARKET_LIVE` NATS stream 또는 로컬 tick 파일을 읽어서
+`paper_watch_live_mark_v1`을 기록할 수 있습니다. 이 경로는 주문을 만들지 않고,
+`live_enabled=false`, `order_execution_enabled=false`,
+`execution_approval_emitted=false`를 유지합니다.
+
+```bash
+cd /Volumes/WD/Developments/nangman-crypto/apps/research-app
+
+cargo run -- \
+  --run-paper-watch-live-cycle \
+  --paper-watch-candidate-s3-bucket nangman-crypto-dev-research-<account-suffix> \
+  --paper-watch-candidate-s3-key paper-watch-candidate/schema=paper_watch_candidate_v1/.../part-000001.jsonl \
+  --market-live-nats-url nats://<private-nats-host>:4222 \
+  --output-s3-bucket nangman-crypto-dev-research-<account-suffix> \
+  --output-s3-prefix paper-watch-live-mark/schema=paper_watch_live_mark_v1
+```
+
+Default NATS settings:
+
+```text
+stream: MARKET_LIVE
+subject: market_live_tick.created.>
+consumer: research-paper-watch-live
+deliver policy: last_per_subject
+batch size: 100
+max messages per cycle: 500
 ```
 
 ## Mattermost Alerts

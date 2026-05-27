@@ -9,6 +9,7 @@ pub enum AppError {
     Config(String),
     Io(String),
     Json(String),
+    Nats(String),
     Validation(String),
 }
 
@@ -19,6 +20,10 @@ impl AppError {
 
     pub fn config(message: impl Into<String>) -> Self {
         Self::Config(message.into())
+    }
+
+    pub fn nats(message: impl Into<String>) -> Self {
+        Self::Nats(message.into())
     }
 
     pub fn validation(message: impl Into<String>) -> Self {
@@ -34,6 +39,7 @@ impl Display for AppError {
             Self::Config(message) => write!(formatter, "config error: {message}"),
             Self::Io(message) => write!(formatter, "io error: {message}"),
             Self::Json(message) => write!(formatter, "json error: {message}"),
+            Self::Nats(message) => write!(formatter, "nats error: {message}"),
             Self::Validation(message) => write!(formatter, "validation error: {message}"),
         }
     }

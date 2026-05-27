@@ -1,11 +1,11 @@
 use crate::artifacts::{build_replay_run_index_records, build_research_aggregate_registry_records};
 use crate::error::{AppError, AppResult};
 use crate::model::{
-    IntelCandidateEvidenceBundle, MarketFeatureDelta, MarketRegimeContext, OssAdapterRun,
-    PaperTradeCandidate, PaperTradeMark, PaperTradeRun, PaperTradeSummary, PaperWatchCandidate,
-    PortfolioAllocationSnapshot, PortfolioReduceOnlySignal, PortfolioRiskRejectEvent, ReplayRun,
-    ReplayRunIndexRecord, ResearchInputManifest, ResearchRunReport, ShadowCycleDecision,
-    ShadowValidationRun,
+    IntelCandidateEvidenceBundle, MarketFeatureDelta, MarketLiveTick, MarketRegimeContext,
+    OssAdapterRun, PaperTradeCandidate, PaperTradeMark, PaperTradeRun, PaperTradeSummary,
+    PaperWatchCandidate, PaperWatchLiveMark, PortfolioAllocationSnapshot,
+    PortfolioReduceOnlySignal, PortfolioRiskRejectEvent, ReplayRun, ReplayRunIndexRecord,
+    ResearchInputManifest, ResearchRunReport, ShadowCycleDecision, ShadowValidationRun,
 };
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use serde::de::{DeserializeOwned, DeserializeSeed, SeqAccess, Visitor};
@@ -119,6 +119,20 @@ pub fn read_oss_adapter_runs(path: &Path) -> AppResult<Vec<OssAdapterRun>> {
 
 pub fn read_shadow_validation_runs(path: &Path) -> AppResult<Vec<ShadowValidationRun>> {
     read_json_array_or_jsonl(path)
+}
+
+pub fn read_paper_watch_candidates_from_bytes(
+    label: &str,
+    bytes: &[u8],
+) -> AppResult<Vec<PaperWatchCandidate>> {
+    read_json_array_or_jsonl_bytes(label, bytes)
+}
+
+pub fn read_market_live_ticks_from_bytes(
+    label: &str,
+    bytes: &[u8],
+) -> AppResult<Vec<MarketLiveTick>> {
+    read_json_array_or_jsonl_bytes(label, bytes)
 }
 
 pub fn read_market_regime_contexts_from_bytes(
@@ -357,6 +371,22 @@ pub fn write_shadow_cycle_decision(
     serde_json::to_writer_pretty(&mut file, decision)?;
     file.write_all(b"\n")?;
     Ok(output_file.to_path_buf())
+}
+
+pub fn write_paper_watch_live_marks(
+    output_dir: &Path,
+    marks: &[PaperWatchLiveMark],
+    output_partition_at_ms: i64,
+) -> AppResult<Vec<PathBuf>> {
+    if marks.is_empty() {
+        return Ok(Vec::new());
+    }
+    let dt = partition(output_partition_at_ms)?;
+    let key = format!(
+        "paper-watch-live-mark/schema={}/dt={}/hour={:02}/part-000001.jsonl",
+        marks[0].schema_version, dt.date, dt.hour
+    );
+    Ok(vec![write_jsonl(output_dir, &key, marks)?])
 }
 
 pub fn write_research_input_manifest(

@@ -31,6 +31,7 @@ async fn main() {
                 paper_trade_runs_created: 0,
                 paper_trade_summaries_created: 0,
                 paper_trade_marks_created: 0,
+                paper_watch_live_marks_created: 0,
                 portfolio_risk_reject_events_created: 0,
                 portfolio_reduce_only_signals_created: 0,
                 output_files: Vec::new(),
@@ -47,6 +48,7 @@ async fn main() {
                 || summary.focused_retest_manifests_created > 0
                 || summary.shadow_cycle_decisions_validated > 0
                 || summary.shadow_cycle_decisions_created > 0
+                || summary.paper_watch_live_marks_created > 0
             {
                 println!(
                     "{}",

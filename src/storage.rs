@@ -2,13 +2,15 @@ use crate::artifacts::{build_replay_run_index_records, build_research_aggregate_
 use crate::error::{AppError, AppResult};
 use crate::io::{
     ResearchOutputArtifacts, read_candidate_bundles_from_bytes,
-    read_market_feature_deltas_matching_symbols_from_bytes, read_market_regime_contexts_from_bytes,
-    read_oss_adapter_runs_from_bytes, read_replay_run_index_records_from_bytes,
+    read_market_feature_deltas_matching_symbols_from_bytes, read_market_live_ticks_from_bytes,
+    read_market_regime_contexts_from_bytes, read_oss_adapter_runs_from_bytes,
+    read_paper_watch_candidates_from_bytes, read_replay_run_index_records_from_bytes,
     read_replay_runs_from_bytes, read_research_input_manifest_from_bytes,
     read_research_run_report_from_bytes, read_shadow_validation_runs_from_bytes,
 };
 use crate::model::{
-    IntelCandidateEvidenceBundle, MarketFeatureDelta, MarketRegimeContext, OssAdapterRun,
+    IntelCandidateEvidenceBundle, MarketFeatureDelta, MarketLiveTick, MarketRegimeContext,
+    OssAdapterRun, PaperWatchCandidate, PaperWatchLiveMark,
     RETEST_CYCLE_SOURCE_STATE_SCHEMA_VERSION, ReplayRun, ReplayRunIndexRecord,
     ResearchInputManifest, ResearchRunReport, RetestCycleSourceState, ShadowCycleDecision,
     ShadowValidationRun,
@@ -48,6 +50,24 @@ pub async fn read_research_run_report_from_s3(
     let client = s3_client().await?;
     let bytes = get_object_bytes(&client, bucket, key).await?;
     read_research_run_report_from_bytes(&format!("s3://{bucket}/{key}"), bytes.as_ref())
+}
+
+pub async fn read_paper_watch_candidates_from_s3(
+    bucket: &str,
+    key: &str,
+) -> AppResult<Vec<PaperWatchCandidate>> {
+    let client = s3_client().await?;
+    let bytes = get_object_bytes(&client, bucket, key).await?;
+    read_paper_watch_candidates_from_bytes(&format!("s3://{bucket}/{key}"), bytes.as_ref())
+}
+
+pub async fn read_market_live_ticks_from_s3(
+    bucket: &str,
+    key: &str,
+) -> AppResult<Vec<MarketLiveTick>> {
+    let client = s3_client().await?;
+    let bytes = get_object_bytes(&client, bucket, key).await?;
+    read_market_live_ticks_from_bytes(&format!("s3://{bucket}/{key}"), bytes.as_ref())
 }
 
 pub async fn read_latest_retest_cycle_source_state_from_s3(
@@ -649,6 +669,40 @@ pub async fn write_shadow_cycle_decision_to_s3(
     );
     put_object_json(&client, bucket, &key, decision).await?;
     Ok(format!("s3://{bucket}/{key}"))
+}
+
+pub async fn write_paper_watch_live_marks_to_s3(
+    bucket: &str,
+    prefix: &str,
+    marks: &[PaperWatchLiveMark],
+    output_partition_at_ms: i64,
+) -> AppResult<Vec<String>> {
+    if marks.is_empty() {
+        return Ok(Vec::new());
+    }
+    if bucket.trim().is_empty() {
+        return Err(AppError::config(
+            "paper watch live mark output S3 bucket must not be empty",
+        ));
+    }
+    let client = s3_client().await?;
+    let dt = partition(output_partition_at_ms)?;
+    let prefix = normalize_prefix(if prefix.trim().is_empty() {
+        "paper-watch-live-mark/schema=paper_watch_live_mark_v1"
+    } else {
+        prefix
+    });
+    if !prefix.starts_with("paper-watch-live-mark/") {
+        return Err(AppError::config(
+            "paper watch live mark S3 prefix must start with paper-watch-live-mark/",
+        ));
+    }
+    let key = format!(
+        "{prefix}dt={}/hour={:02}/part-000001.jsonl",
+        dt.date, dt.hour
+    );
+    put_jsonl_object(&client, bucket, &key, marks).await?;
+    Ok(vec![format!("s3://{bucket}/{key}")])
 }
 
 pub async fn write_research_input_manifest_to_s3(
