@@ -1,8 +1,9 @@
 use crate::model::{
-    ResearchBias, ResearchRunReport, ShadowCycleDecision, ShadowCycleSchedulerAction,
+    PaperWatchCandidate, PaperWatchLiveMark, ResearchBias, ResearchRunReport, ShadowCycleDecision,
+    ShadowCycleSchedulerAction,
 };
 use serde_json::json;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::time::Duration;
 
@@ -110,11 +111,26 @@ impl AlertEvent {
     }
 }
 
-pub async fn emit_research_report_alert_from_env(report: &ResearchRunReport) {
+pub async fn emit_research_report_alert_from_env(
+    report: &ResearchRunReport,
+    paper_watch_candidates: &[PaperWatchCandidate],
+) {
     let Some(config) = AlertConfig::from_env() else {
         return;
     };
-    let Some(event) = research_report_alert_event(report, &config) else {
+    let Some(event) = research_report_alert_event(report, paper_watch_candidates, &config) else {
+        return;
+    };
+    if let Err(error) = send_event(&config, &event).await {
+        eprintln!("mattermost alert delivery failed: {error}");
+    }
+}
+
+pub async fn emit_paper_watch_live_mark_alert_from_env(marks: &[PaperWatchLiveMark]) {
+    let Some(config) = AlertConfig::from_env() else {
+        return;
+    };
+    let Some(event) = paper_watch_live_mark_alert_event(marks, &config) else {
         return;
     };
     if let Err(error) = send_event(&config, &event).await {
@@ -136,6 +152,7 @@ pub async fn emit_shadow_cycle_decision_alert_from_env(decision: &ShadowCycleDec
 
 fn research_report_alert_event(
     report: &ResearchRunReport,
+    paper_watch_candidates: &[PaperWatchCandidate],
     config: &AlertConfig,
 ) -> Option<AlertEvent> {
     let counts = bias_counts(report);
@@ -152,7 +169,10 @@ fn research_report_alert_event(
         .get(ResearchBias::PruneBias.report_key())
         .unwrap_or(&0);
     let paper_count = report.paper_trade_candidates.len();
-    let paper_watch_count = report.paper_watch_candidates.len();
+    let paper_watch_count = report
+        .paper_watch_candidates
+        .len()
+        .max(paper_watch_candidates.len());
     let shadow_count = report.shadow_validation_runs.len();
     let max_total_notional_pct = report
         .portfolio_allocation_snapshot
@@ -177,8 +197,8 @@ fn research_report_alert_event(
     } else if paper_watch_count > 0 {
         (
             AlertPriority::P2,
-            "PAPER_WATCH 후보 발생".to_owned(),
-            "positive RETEST 후보가 돈을 쓰지 않는 forward paper-watch 관측 단계로 올라갔습니다."
+            format!("모의 관찰 후보 {paper_watch_count}개 발생"),
+            "실제 거래가 아니라, 수익 가능성이 보인 RETEST 후보를 돈 안 쓰는 실시간 모의 관찰 단계로 올렸습니다."
                 .to_owned(),
         )
     } else if shadow_count > 0 || promote_shadow_count > 0 {
@@ -202,29 +222,93 @@ fn research_report_alert_event(
         return None;
     }
 
+    let mut current_state = vec![
+        format!("report_id: {}", report.research_run_report_id),
+        format!("실행 범위: {}", report.run_scope),
+        format!("전체 후보: {}개", report.summary_findings.len()),
+        format!(
+            "판정: RETEST {retest_count} / PRUNE {prune_count} / SHADOW 승급 {promote_shadow_count} / PAPER 승급 {promote_paper_count}"
+        ),
+        format!("shadow 관찰 생성: {shadow_count}개"),
+        format!("모의 관찰 후보: {paper_watch_count}개"),
+        format!("paper 후보: {paper_count}개"),
+        format!("실제 투자 비중: {max_total_notional_pct:.4}"),
+    ];
+    current_state.extend(paper_watch_candidate_summary_lines(paper_watch_candidates));
+
     Some(AlertEvent {
         priority,
         title,
         conclusion,
-        current_state: vec![
-            format!("report_id: {}", report.research_run_report_id),
-            format!("run_scope: {}", report.run_scope),
-            format!("total candidates: {}", report.summary_findings.len()),
-            format!("RETEST: {retest_count}"),
-            format!("PRUNE: {prune_count}"),
-            format!("PROMOTE_TO_SHADOW: {promote_shadow_count}"),
-            format!("PROMOTE_TO_PAPER: {promote_paper_count}"),
-            format!("shadow validation created: {shadow_count}"),
-            format!("paper-watch candidates: {paper_watch_count}"),
-            format!("paper candidates: {paper_count}"),
-            format!("max_total_notional_pct: {max_total_notional_pct:.4}"),
-        ],
+        current_state,
         reasons: top_reason_lines(report, priority),
         next_actions: research_next_actions(priority),
         safety: vec![
-            "order execution: disabled by research-app contract".to_owned(),
-            "EXECUTION_APPROVED: never emitted by research-app".to_owned(),
-            "LIVE_READY: never emitted by research-app".to_owned(),
+            "실제 주문: 꺼짐".to_owned(),
+            "실제 돈 사용: 없음".to_owned(),
+            "EXECUTION_APPROVED/LIVE_READY: research-app에서 발행하지 않음".to_owned(),
+        ],
+    })
+}
+
+fn paper_watch_live_mark_alert_event(
+    marks: &[PaperWatchLiveMark],
+    config: &AlertConfig,
+) -> Option<AlertEvent> {
+    if marks.is_empty() {
+        return None;
+    }
+    let unsafe_mark = marks.iter().any(|mark| {
+        !mark.safety.paper_only
+            || mark.safety.live_enabled
+            || mark.safety.order_execution_enabled
+            || mark.safety.execution_approval_emitted
+    });
+    let priority = if unsafe_mark {
+        AlertPriority::P0
+    } else {
+        AlertPriority::P2
+    };
+    if !config.allows(priority) {
+        return None;
+    }
+
+    let symbols = unique_join(marks.iter().map(|mark| mark.symbol_canonical.as_str()));
+    let venue_counts = count_join(marks.iter().map(|mark| mark.venue.as_str()));
+    let state_counts = count_join(marks.iter().map(|mark| mark.lifecycle_state.as_str()));
+    let net_returns = marks
+        .iter()
+        .map(|mark| mark.net_return_bps)
+        .collect::<Vec<_>>();
+    let min_net = net_returns.iter().copied().fold(f64::INFINITY, f64::min);
+    let max_net = net_returns
+        .iter()
+        .copied()
+        .fold(f64::NEG_INFINITY, f64::max);
+    let avg_net = net_returns.iter().sum::<f64>() / net_returns.len() as f64;
+
+    Some(AlertEvent {
+        priority,
+        title: format!("모의 live 관측 결과 {}개", marks.len()),
+        conclusion: "실시간 Binance/Upbit 가격으로 paper-watch 후보의 모의 관측 mark를 기록했습니다. 실제 주문은 없습니다."
+            .to_owned(),
+        current_state: vec![
+            format!("관찰 코인: {symbols}"),
+            format!("생성된 live mark: {}개", marks.len()),
+            format!("거래소별 mark: {venue_counts}"),
+            format!("후보 상태: {state_counts}"),
+            format!("모의 수익률 범위: {min_net:.2} ~ {max_net:.2} bps"),
+            format!("모의 평균 수익률: {avg_net:.2} bps"),
+        ],
+        reasons: Vec::new(),
+        next_actions: vec![
+            "live mark를 계속 누적해서 후보별 forward 성과를 봅니다.".to_owned(),
+            "관찰 결과가 충분히 쌓이면 PROMOTE/PRUNE 판단에 사용합니다.".to_owned(),
+        ],
+        safety: vec![
+            "실제 주문: 꺼짐".to_owned(),
+            "실제 돈 사용: 없음".to_owned(),
+            "paper-watch live mark만 기록".to_owned(),
         ],
     })
 }
@@ -359,29 +443,134 @@ fn top_reason_lines(report: &ResearchRunReport, priority: AlertPriority) -> Vec<
     rows.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
     rows.into_iter()
         .take(5)
-        .map(|(reason, count)| format!("{reason}: {count}"))
+        .map(|(reason, count)| format!("{}: {}개", human_reason(&reason), count))
         .collect()
 }
 
 fn research_next_actions(priority: AlertPriority) -> Vec<String> {
     match priority {
         AlertPriority::P0 => vec![
-            "confirm live/order configuration immediately".to_owned(),
-            "pause promotion workflow if this was not an intentional change".to_owned(),
+            "live/order 설정이 의도적으로 열린 것인지 즉시 확인합니다.".to_owned(),
+            "의도한 변경이 아니면 승급 흐름을 멈춥니다.".to_owned(),
         ],
         AlertPriority::P1 => vec![
-            "review paper candidate contract before any execution boundary changes".to_owned(),
-            "keep live/order execution disabled".to_owned(),
+            "paper 후보 계약을 먼저 검토하고, 실행 경계 변경은 별도로 승인합니다.".to_owned(),
+            "실제 주문과 live trading은 계속 꺼둡니다.".to_owned(),
         ],
         AlertPriority::P2 => vec![
-            "watch forward paper/shadow validation until completion evidence exists".to_owned(),
-            "do not create live approval from pending observation state".to_owned(),
+            "실제 주문 없이 paper-watch live mark를 계속 누적합니다.".to_owned(),
+            "관찰이 끝나기 전에는 live 승인으로 올리지 않습니다.".to_owned(),
         ],
         AlertPriority::P3 => vec![
-            "run focused retest or gap resolver for the listed blockers".to_owned(),
-            "keep candidate in RETEST until sample, unseen, split, and liquidity evidence clear"
+            "부족한 샘플과 시장 데이터 구간을 focused retest로 채웁니다.".to_owned(),
+            "샘플, unseen, train/validation, liquidity 증거가 풀릴 때까지 RETEST로 둡니다."
                 .to_owned(),
         ],
+    }
+}
+
+fn paper_watch_candidate_summary_lines(candidates: &[PaperWatchCandidate]) -> Vec<String> {
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+    let symbols = unique_join(
+        candidates
+            .iter()
+            .map(|candidate| candidate.symbol_canonical.as_str()),
+    );
+    let completed = candidates
+        .iter()
+        .map(|candidate| candidate.replay_sample_summary.completed_count)
+        .sum::<usize>();
+    let replay_runs = candidates
+        .iter()
+        .map(|candidate| candidate.replay_sample_summary.replay_run_count)
+        .sum::<usize>();
+    let positive = candidates
+        .iter()
+        .map(|candidate| candidate.replay_sample_summary.positive_net_count)
+        .sum::<usize>();
+    let non_positive = candidates
+        .iter()
+        .map(|candidate| candidate.replay_sample_summary.non_positive_net_count)
+        .sum::<usize>();
+    let net_values = candidates
+        .iter()
+        .filter_map(|candidate| {
+            candidate
+                .replay_sample_summary
+                .weighted_mean_net_after_cost_bps
+        })
+        .collect::<Vec<_>>();
+    let mut lines = vec![
+        format!("관찰 코인: {symbols}"),
+        format!("완료 replay 샘플: {completed}/{replay_runs}"),
+        format!("positive/non-positive 샘플: {positive}/{non_positive}"),
+    ];
+    if !net_values.is_empty() {
+        let min_net = net_values.iter().copied().fold(f64::INFINITY, f64::min);
+        let max_net = net_values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        lines.push(format!(
+            "과거 검증 net_after_cost 범위: {min_net:.2} ~ {max_net:.2} bps"
+        ));
+    }
+    lines
+}
+
+fn unique_join<'a>(values: impl Iterator<Item = &'a str>) -> String {
+    let values = values
+        .filter_map(|value| {
+            let trimmed = value.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_owned())
+        })
+        .collect::<BTreeSet<_>>();
+    if values.is_empty() {
+        "없음".to_owned()
+    } else {
+        values.into_iter().collect::<Vec<_>>().join(", ")
+    }
+}
+
+fn count_join<'a>(values: impl Iterator<Item = &'a str>) -> String {
+    let mut counts = BTreeMap::<String, usize>::new();
+    for value in values {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            *counts.entry(trimmed.to_owned()).or_default() += 1;
+        }
+    }
+    if counts.is_empty() {
+        return "없음".to_owned();
+    }
+    counts
+        .into_iter()
+        .map(|(value, count)| format!("{value} {count}개"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn human_reason(reason: &str) -> &'static str {
+    match reason {
+        "native_replay_horizon_not_materialized" => "목표 보유시간만큼의 시장 데이터가 아직 부족함",
+        "native_replay_positive_but_promotion_blocked" => {
+            "과거 검증은 긍정적이지만 승급 조건이 아직 부족함"
+        }
+        "native_replay_positive_but_survival_not_proven" => {
+            "시간이 지나도 신호가 유지되는지 아직 증명되지 않음"
+        }
+        "needs_unseen_window_validation" | "unseen_window_validation_not_proven" => {
+            "아직 보지 않은 구간 검증이 부족함"
+        }
+        "no_completed_native_replay_samples" => "완료된 replay 샘플이 아직 없음",
+        "promotion_sample_count_below_minimum" => "승급에 필요한 샘플 수가 부족함",
+        "liquidity_filter_not_materialized" => "유동성 검증 데이터가 아직 준비되지 않음",
+        "liquidity_filter_no_positive_volume_observed" => {
+            "거래량 검증에서 충분한 유동성이 확인되지 않음"
+        }
+        "deterministic_shadow_gate_passed" => "shadow 관찰로 올릴 조건을 통과함",
+        "shadow_validation_passed" => "shadow 검증을 통과함",
+        "portfolio_notional_non_zero" => "실제 투자 비중이 0보다 큼",
+        _ => "기타 검증 조건 미충족",
     }
 }
 
@@ -408,9 +597,10 @@ fn append_section(sections: &mut Vec<String>, title: &str, values: &[String]) {
 mod tests {
     use super::*;
     use crate::model::{
-        DEFAULT_RESEARCH_GATE_POLICY_VERSION, HypothesisOutput, PortfolioAllocationSnapshot,
-        ResearchGatePolicy, ResearchRunStatus, ShadowCycleDecisionSafety, ShadowCycleSampleState,
-        SummaryFinding,
+        DEFAULT_RESEARCH_GATE_POLICY_VERSION, HypothesisOutput, PaperExpectedCostProfile,
+        PaperExpectedRiskProfile, PaperWatchReplaySampleSummary, PaperWatchSafety,
+        PortfolioAllocationSnapshot, ResearchGatePolicy, ResearchRunStatus,
+        ShadowCycleDecisionSafety, ShadowCycleSampleState, SummaryFinding, SurvivalBand,
     };
 
     #[test]
@@ -438,7 +628,7 @@ mod tests {
         }]);
         let mut config = test_config(AlertPriority::P3);
         config.include_retest_summary = true;
-        let event = research_report_alert_event(&report, &config).expect("event is created");
+        let event = research_report_alert_event(&report, &[], &config).expect("event is created");
         let text = event.text("dev");
 
         assert!(text.contains("[P3][research-app] RETEST"));
@@ -447,7 +637,7 @@ mod tests {
         assert!(text.contains("주요 원인:"));
         assert!(text.contains("다음 행동:"));
         assert!(text.contains("안전 상태:"));
-        assert!(text.contains("promotion_sample_count_below_minimum: 1"));
+        assert!(text.contains("승급에 필요한 샘플 수가 부족함: 1개"));
     }
 
     #[test]
@@ -459,7 +649,7 @@ mod tests {
             reason_codes: vec!["deterministic_shadow_gate_passed".to_owned()],
         }]);
         let config = test_config(AlertPriority::P2);
-        let event = research_report_alert_event(&report, &config).expect("event is created");
+        let event = research_report_alert_event(&report, &[], &config).expect("event is created");
 
         assert_eq!(event.priority, AlertPriority::P2);
         assert!(event.text("dev").contains("PROMOTE_TO_SHADOW"));
@@ -473,15 +663,21 @@ mod tests {
             bias: ResearchBias::RetestBias,
             reason_codes: vec!["native_replay_positive_but_promotion_blocked".to_owned()],
         }]);
-        report.paper_watch_candidates = vec!["paper_watch_candidate_001".to_owned()];
-        let event = research_report_alert_event(&report, &test_config(AlertPriority::P2))
-            .expect("paper watch event is created");
+        let candidates = vec![test_paper_watch_candidate("TON")];
+        report.paper_watch_candidates = candidates
+            .iter()
+            .map(|candidate| candidate.paper_watch_candidate_id.clone())
+            .collect();
+        let event =
+            research_report_alert_event(&report, &candidates, &test_config(AlertPriority::P2))
+                .expect("paper watch event is created");
         let text = event.text("dev");
 
         assert_eq!(event.priority, AlertPriority::P2);
-        assert!(text.contains("PAPER_WATCH"));
-        assert!(text.contains("paper-watch candidates: 1"));
-        assert!(text.contains("order execution: disabled by research-app contract"));
+        assert!(text.contains("모의 관찰 후보 1개 발생"));
+        assert!(text.contains("관찰 코인: TON"));
+        assert!(text.contains("완료 replay 샘플: 5/10"));
+        assert!(text.contains("실제 주문: 꺼짐"));
         assert!(!text.contains("LIVE_READY: true"));
     }
 
@@ -494,7 +690,9 @@ mod tests {
             reason_codes: vec!["promotion_sample_count_below_minimum".to_owned()],
         }]);
 
-        assert!(research_report_alert_event(&report, &test_config(AlertPriority::P3)).is_none());
+        assert!(
+            research_report_alert_event(&report, &[], &test_config(AlertPriority::P3)).is_none()
+        );
     }
 
     #[test]
@@ -508,7 +706,7 @@ mod tests {
         let mut config = test_config(AlertPriority::P2);
         config.include_retest_summary = true;
 
-        assert!(research_report_alert_event(&report, &config).is_none());
+        assert!(research_report_alert_event(&report, &[], &config).is_none());
     }
 
     #[test]
@@ -519,14 +717,14 @@ mod tests {
             bias: ResearchBias::PromoteToPaperBias,
             reason_codes: vec!["shadow_validation_passed".to_owned()],
         }]);
-        let event = research_report_alert_event(&report, &test_config(AlertPriority::P1))
+        let event = research_report_alert_event(&report, &[], &test_config(AlertPriority::P1))
             .expect("paper event is created");
 
         assert_eq!(event.priority, AlertPriority::P1);
         assert!(
             event
                 .text("prod")
-                .contains("keep live/order execution disabled")
+                .contains("실제 주문과 live trading은 계속 꺼둡니다.")
         );
     }
 
@@ -540,30 +738,86 @@ mod tests {
         }]);
         report.portfolio_allocation_snapshot = Some(test_portfolio_snapshot());
 
-        let event = research_report_alert_event(&report, &test_config(AlertPriority::P0))
+        let event = research_report_alert_event(&report, &[], &test_config(AlertPriority::P0))
             .expect("portfolio event is created");
 
         assert_eq!(event.priority, AlertPriority::P0);
-        assert!(event.text("dev").contains("max_total_notional_pct: 0.1000"));
+        assert!(event.text("dev").contains("실제 투자 비중: 0.1000"));
     }
 
     #[test]
     fn reason_summary_limits_to_top_five_reasons() {
         let report = test_report(vec![
-            finding("cand_001", ResearchBias::PromoteToShadowBias, &["c", "a"]),
-            finding("cand_002", ResearchBias::PromoteToShadowBias, &["c", "b"]),
-            finding("cand_003", ResearchBias::PromoteToShadowBias, &["c", "b"]),
-            finding("cand_004", ResearchBias::PromoteToShadowBias, &["d"]),
-            finding("cand_005", ResearchBias::PromoteToShadowBias, &["e"]),
-            finding("cand_006", ResearchBias::PromoteToShadowBias, &["f"]),
+            finding(
+                "cand_001",
+                ResearchBias::PromoteToShadowBias,
+                &[
+                    "native_replay_horizon_not_materialized",
+                    "needs_unseen_window_validation",
+                ],
+            ),
+            finding(
+                "cand_002",
+                ResearchBias::PromoteToShadowBias,
+                &[
+                    "native_replay_horizon_not_materialized",
+                    "promotion_sample_count_below_minimum",
+                ],
+            ),
+            finding(
+                "cand_003",
+                ResearchBias::PromoteToShadowBias,
+                &[
+                    "native_replay_horizon_not_materialized",
+                    "promotion_sample_count_below_minimum",
+                ],
+            ),
+            finding(
+                "cand_004",
+                ResearchBias::PromoteToShadowBias,
+                &["liquidity_filter_not_materialized"],
+            ),
+            finding(
+                "cand_005",
+                ResearchBias::PromoteToShadowBias,
+                &["liquidity_filter_no_positive_volume_observed"],
+            ),
+            finding(
+                "cand_006",
+                ResearchBias::PromoteToShadowBias,
+                &["native_replay_positive_but_survival_not_proven"],
+            ),
         ]);
 
         let reasons = top_reason_lines(&report, AlertPriority::P2);
 
         assert_eq!(reasons.len(), 5);
-        assert_eq!(reasons[0], "c: 3");
-        assert!(reasons.contains(&"b: 2".to_owned()));
-        assert!(!reasons.contains(&"f: 1".to_owned()));
+        assert_eq!(
+            reasons[0],
+            "목표 보유시간만큼의 시장 데이터가 아직 부족함: 3개"
+        );
+        assert!(reasons.contains(&"승급에 필요한 샘플 수가 부족함: 2개".to_owned()));
+        assert!(!reasons.iter().any(|line| line.contains("positive_volume")));
+    }
+
+    #[test]
+    fn paper_watch_live_mark_alert_summarizes_symbols_and_results() {
+        let marks = vec![
+            test_live_mark("PENGU", "binance", 12.5),
+            test_live_mark("TON", "upbit", -3.0),
+            test_live_mark("ZEC", "binance", 0.5),
+        ];
+
+        let event = paper_watch_live_mark_alert_event(&marks, &test_config(AlertPriority::P2))
+            .expect("live mark event is created");
+        let text = event.text("dev");
+
+        assert_eq!(event.priority, AlertPriority::P2);
+        assert!(text.contains("모의 live 관측 결과 3개"));
+        assert!(text.contains("관찰 코인: PENGU, TON, ZEC"));
+        assert!(text.contains("거래소별 mark: binance 2개, upbit 1개"));
+        assert!(text.contains("모의 수익률 범위: -3.00 ~ 12.50 bps"));
+        assert!(text.contains("실제 돈 사용: 없음"));
     }
 
     #[test]
@@ -655,6 +909,91 @@ mod tests {
             candidate_lifecycle_key: format!("life_{candidate_id}"),
             bias,
             reason_codes: reasons.iter().map(|reason| (*reason).to_owned()).collect(),
+        }
+    }
+
+    fn test_paper_watch_candidate(symbol: &str) -> PaperWatchCandidate {
+        PaperWatchCandidate {
+            paper_watch_candidate_id: format!("watch_{symbol}"),
+            candidate_id: format!("cand_{symbol}"),
+            candidate_lifecycle_key: format!("life_{symbol}"),
+            symbol_canonical: symbol.to_owned(),
+            source_research_run_id: "report_test".to_owned(),
+            source_research_packet_id: "packet_test".to_owned(),
+            source_research_bias: ResearchBias::RetestBias,
+            historical_survival_band: SurvivalBand::Stable,
+            admission_reason_codes: vec!["retest_positive_watch_admitted".to_owned()],
+            blocked_promotion_reason_codes: vec![
+                "native_replay_positive_but_promotion_blocked".to_owned(),
+            ],
+            replay_sample_summary: PaperWatchReplaySampleSummary {
+                research_aggregate_key: "agg_test".to_owned(),
+                replay_run_count: 10,
+                completed_count: 5,
+                positive_net_count: 3,
+                non_positive_net_count: 2,
+                missing_market_replay_data_count: 0,
+                insufficient_evidence_count: 0,
+                effective_completed_sample_weight: 5.0,
+                weighted_mean_net_after_cost_bps: Some(12.5),
+                weighted_profit_factor_ppm: Some(1_200_000),
+            },
+            expected_cost_profile: PaperExpectedCostProfile {
+                fee_model_version: "fee".to_owned(),
+                slippage_model_version: "slippage".to_owned(),
+                estimated_cost_bps: Some(8.0),
+                cost_stressed_mean_net_after_cost_bps: Some(4.5),
+            },
+            expected_risk_profile: PaperExpectedRiskProfile {
+                survival_band: SurvivalBand::Stable,
+                max_drawdown_band: "low".to_owned(),
+                positive_net_count: 3,
+                non_positive_net_count: 2,
+            },
+            target_max_holding_hours: 24,
+            absolute_max_holding_hours: 72,
+            force_flat_policy: "paper_watch_only_no_order_execution".to_owned(),
+            paper_start_recommendation: "start_forward_paper_watch".to_owned(),
+            safety: PaperWatchSafety {
+                paper_only: true,
+                live_enabled: false,
+                order_execution_enabled: false,
+                execution_approval_emitted: false,
+            },
+            created_at_ms: 1_000,
+            schema_version: "paper_watch_candidate_v1".to_owned(),
+        }
+    }
+
+    fn test_live_mark(symbol: &str, venue: &str, net_return_bps: f64) -> PaperWatchLiveMark {
+        PaperWatchLiveMark {
+            paper_watch_live_mark_id: format!("mark_{symbol}_{venue}"),
+            paper_watch_candidate_id: format!("watch_{symbol}"),
+            candidate_id: format!("cand_{symbol}"),
+            candidate_lifecycle_key: format!("life_{symbol}"),
+            symbol_canonical: symbol.to_owned(),
+            source_research_run_id: "report_test".to_owned(),
+            source_market_live_event_id: format!("tick_{symbol}_{venue}"),
+            venue: venue.to_owned(),
+            mark_source: "market_live_tick".to_owned(),
+            marked_at_ms: 2_000,
+            exchange_timestamp_ms: 1_900,
+            ingest_timestamp_ms: 2_000,
+            holding_elapsed_ms: 1_000,
+            entry_mark_price: 100.0,
+            current_mark_price: 100.0,
+            net_return_bps,
+            target_max_holding_hours: 24,
+            absolute_max_holding_hours: 72,
+            lifecycle_state: "watching".to_owned(),
+            reason_codes: vec!["paper_watch_live_mark".to_owned()],
+            safety: PaperWatchSafety {
+                paper_only: true,
+                live_enabled: false,
+                order_execution_enabled: false,
+                execution_approval_emitted: false,
+            },
+            schema_version: "paper_watch_live_mark_v1".to_owned(),
         }
     }
 

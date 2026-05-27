@@ -1,6 +1,7 @@
 use crate::admission::{horizon_ms, validate_bundle_admission};
 use crate::alert::{
-    emit_research_report_alert_from_env, emit_shadow_cycle_decision_alert_from_env,
+    emit_paper_watch_live_mark_alert_from_env, emit_research_report_alert_from_env,
+    emit_shadow_cycle_decision_alert_from_env,
 };
 use crate::error::{AppError, AppResult};
 use crate::focused_retest::{
@@ -1160,7 +1161,7 @@ pub async fn run(args: Args) -> AppResult<RunSummary> {
         )
         .await?,
     );
-    emit_research_report_alert_from_env(&report).await;
+    emit_research_report_alert_from_env(&report, &paper_watch_candidates).await;
 
     Ok(RunSummary {
         retest_horizon_plans_created: 0,
@@ -1219,6 +1220,7 @@ async fn run_paper_watch_live_cycle_mode(args: &Args) -> AppResult<RunSummary> {
         println!("{}", serde_json::to_string_pretty(&marks)?);
         Vec::new()
     };
+    emit_paper_watch_live_mark_alert_from_env(&marks).await;
 
     Ok(RunSummary {
         paper_watch_live_marks_created: marks.len(),
