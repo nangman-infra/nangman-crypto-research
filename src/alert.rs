@@ -1028,6 +1028,59 @@ mod tests {
         );
     }
 
+    #[test]
+    fn pipeline_alert_event_payload_preserves_operator_sections() {
+        let event = AlertEvent {
+            priority: AlertPriority::P2,
+            title: "모의 관찰 후보 2개 발생".to_owned(),
+            conclusion: "paper-watch 후보를 관찰 단계로 올렸습니다.".to_owned(),
+            current_state: vec!["관찰 코인: DOGE, XRP".to_owned()],
+            reasons: vec!["과거 검증은 긍정적이지만 승급 조건이 아직 부족함: 2개".to_owned()],
+            next_actions: vec!["실제 주문 없이 live mark를 계속 누적합니다.".to_owned()],
+            safety: vec!["실제 주문: 꺼짐".to_owned()],
+        };
+
+        let payload = PipelineAlertEvent::from_alert_event(
+            &event,
+            "pipeline_alert_test",
+            "pipeline_alert_dedupe_test",
+            "dev",
+            1779937200123,
+        );
+        let json = serde_json::to_value(&payload).expect("payload serializes");
+
+        assert_eq!(json["schema_version"], "pipeline_alert_event_v1");
+        assert_eq!(json["app"], APP_NAME);
+        assert_eq!(json["priority"], "P2");
+        assert_eq!(json["title"], "모의 관찰 후보 2개 발생");
+        assert_eq!(json["current_state"][0], "관찰 코인: DOGE, XRP");
+        assert_eq!(json["safety"][0], "실제 주문: 꺼짐");
+        assert_eq!(json["created_at_ms"], 1779937200123_i64);
+    }
+
+    #[test]
+    fn s3_key_token_replaces_unsafe_characters() {
+        assert_eq!(s3_key_token("research app/P2"), "research_app_P2");
+        assert_eq!(
+            s3_key_token("pipeline_alert_abc-123"),
+            "pipeline_alert_abc-123"
+        );
+    }
+
+    #[test]
+    fn pipeline_alert_event_key_rejects_invalid_timestamp() {
+        let error = pipeline_alert_event_key(
+            DEFAULT_PIPELINE_ALERT_S3_PREFIX,
+            i64::MAX,
+            "research-app",
+            "P2",
+            "event",
+        )
+        .expect_err("invalid timestamp is rejected");
+
+        assert_eq!(error, "created_at_ms is outside supported timestamp range");
+    }
+
     fn test_config(min_priority: AlertPriority) -> AlertConfig {
         AlertConfig {
             event_bucket: "nangman-crypto-dev-research-962214".to_owned(),
