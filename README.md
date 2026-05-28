@@ -133,11 +133,17 @@ NANGMAN_ALERT_MIN_PRIORITY=P2
 Priority behavior:
 
 ```text
-P0: portfolio notional or live/order safety boundary changed
+P0: portfolio notional, live/order safety boundary, or unsafe paper-watch mark changed
 P1: PROMOTE_TO_PAPER or paper candidate created
-P2: PAPER_WATCH, PROMOTE_TO_SHADOW, or shadow validation created
+P2: PAPER_WATCH candidate creation, PROMOTE_TO_SHADOW, or shadow validation created
 P3: RETEST blocker summary, only when explicitly enabled
 ```
+
+`paper-watch-live-mark` batches are intentionally quiet when they are paper-only
+and safe. They are high-frequency observation data, not operator decisions. A
+P0 alert is emitted only if a mark reports non-paper-only, live-enabled,
+order-execution-enabled, or execution-approved state. Routine live mark progress
+belongs in the pipeline digest/state-change alert layer.
 
 Optional lower-signal summaries:
 

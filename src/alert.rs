@@ -264,11 +264,10 @@ fn paper_watch_live_mark_alert_event(
             || mark.safety.order_execution_enabled
             || mark.safety.execution_approval_emitted
     });
-    let priority = if unsafe_mark {
-        AlertPriority::P0
-    } else {
-        AlertPriority::P2
-    };
+    if !unsafe_mark {
+        return None;
+    }
+    let priority = AlertPriority::P0;
     if !config.allows(priority) {
         return None;
     }
@@ -289,8 +288,8 @@ fn paper_watch_live_mark_alert_event(
 
     Some(AlertEvent {
         priority,
-        title: format!("모의 live 관측 결과 {}개", marks.len()),
-        conclusion: "실시간 Binance/Upbit 가격으로 paper-watch 후보의 모의 관측 mark를 기록했습니다. 실제 주문은 없습니다."
+        title: format!("paper-watch live safety boundary changed: {} marks", marks.len()),
+        conclusion: "paper-watch live mark 안에서 paper-only 안전 경계가 깨진 항목이 감지됐습니다. 실제 주문 설정이 열린 것인지 즉시 확인해야 합니다."
             .to_owned(),
         current_state: vec![
             format!("관찰 코인: {symbols}"),
@@ -302,8 +301,8 @@ fn paper_watch_live_mark_alert_event(
         ],
         reasons: Vec::new(),
         next_actions: vec![
-            "live mark를 계속 누적해서 후보별 forward 성과를 봅니다.".to_owned(),
-            "관찰 결과가 충분히 쌓이면 PROMOTE/PRUNE 판단에 사용합니다.".to_owned(),
+            "live/order 설정이 의도적으로 열린 것인지 즉시 확인합니다.".to_owned(),
+            "의도한 변경이 아니면 paper-watch observer와 downstream 승급 흐름을 멈춥니다.".to_owned(),
         ],
         safety: vec![
             "실제 주문: 꺼짐".to_owned(),
@@ -801,23 +800,37 @@ mod tests {
     }
 
     #[test]
-    fn paper_watch_live_mark_alert_summarizes_symbols_and_results() {
+    fn safe_paper_watch_live_mark_batches_are_suppressed() {
         let marks = vec![
             test_live_mark("PENGU", "binance", 12.5),
             test_live_mark("TON", "upbit", -3.0),
             test_live_mark("ZEC", "binance", 0.5),
         ];
 
+        assert!(
+            paper_watch_live_mark_alert_event(&marks, &test_config(AlertPriority::P2)).is_none()
+        );
+    }
+
+    #[test]
+    fn unsafe_paper_watch_live_mark_forces_p0_alert() {
+        let mut marks = vec![
+            test_live_mark("PENGU", "binance", 12.5),
+            test_live_mark("TON", "upbit", -3.0),
+            test_live_mark("ZEC", "binance", 0.5),
+        ];
+        marks[1].safety.live_enabled = true;
+
         let event = paper_watch_live_mark_alert_event(&marks, &test_config(AlertPriority::P2))
-            .expect("live mark event is created");
+            .expect("unsafe live mark event is created");
         let text = event.text("dev");
 
-        assert_eq!(event.priority, AlertPriority::P2);
-        assert!(text.contains("모의 live 관측 결과 3개"));
+        assert_eq!(event.priority, AlertPriority::P0);
+        assert!(text.contains("paper-watch live safety boundary changed: 3 marks"));
         assert!(text.contains("관찰 코인: PENGU, TON, ZEC"));
         assert!(text.contains("거래소별 mark: binance 2개, upbit 1개"));
         assert!(text.contains("모의 수익률 범위: -3.00 ~ 12.50 bps"));
-        assert!(text.contains("실제 돈 사용: 없음"));
+        assert!(text.contains("paper-only 안전 경계가 깨진 항목"));
     }
 
     #[test]
