@@ -2,13 +2,19 @@ use crate::model::{
     PaperWatchCandidate, PaperWatchLiveMark, ResearchBias, ResearchRunReport, ShadowCycleDecision,
     ShadowCycleSchedulerAction,
 };
-use serde_json::json;
+use crate::{hash::stable_id, time::now_ms};
+use aws_config::BehaviorVersion;
+use aws_sdk_s3::{Client, primitives::ByteStream};
+use aws_types::region::Region;
+use chrono::{DateTime, Datelike, Timelike, Utc};
+use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
-use std::time::Duration;
 
 const APP_NAME: &str = "research-app";
 const DEFAULT_ENVIRONMENT: &str = "dev";
+const DEFAULT_PIPELINE_ALERT_S3_PREFIX: &str =
+    "pipeline-alert-event/schema=pipeline_alert_event_v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum AlertPriority {
@@ -41,7 +47,8 @@ impl AlertPriority {
 
 #[derive(Debug, Clone)]
 struct AlertConfig {
-    webhook_url: String,
+    event_bucket: String,
+    event_prefix: String,
     environment: String,
     min_priority: AlertPriority,
     include_retest_summary: bool,
@@ -50,14 +57,18 @@ struct AlertConfig {
 
 impl AlertConfig {
     fn from_env() -> Option<Self> {
-        let webhook_url = env::var("NANGMAN_ALERT_WEBHOOK_URL")
+        let event_bucket = env::var("NANGMAN_PIPELINE_ALERT_S3_BUCKET")
             .ok()
             .filter(|value| !value.trim().is_empty())
             .or_else(|| {
-                env::var("MATTERMOST_WEBHOOK_URL")
+                env::var("RESEARCH_OUTPUT_S3_BUCKET")
                     .ok()
                     .filter(|value| !value.trim().is_empty())
             })?;
+        let event_prefix = env::var("NANGMAN_PIPELINE_ALERT_S3_PREFIX")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_PIPELINE_ALERT_S3_PREFIX.to_owned());
         let environment =
             env::var("NANGMAN_ALERT_ENV").unwrap_or_else(|_| DEFAULT_ENVIRONMENT.to_owned());
         let min_priority = env::var("NANGMAN_ALERT_MIN_PRIORITY")
@@ -68,7 +79,8 @@ impl AlertConfig {
         let include_shadow_wait = env_bool("NANGMAN_ALERT_INCLUDE_SHADOW_WAIT");
 
         Some(Self {
-            webhook_url,
+            event_bucket,
+            event_prefix,
             environment,
             min_priority,
             include_retest_summary,
@@ -93,6 +105,7 @@ pub struct AlertEvent {
 }
 
 impl AlertEvent {
+    #[cfg(test)]
     fn text(&self, environment: &str) -> String {
         let mut sections = vec![
             format!("[{}][{}] {}", self.priority.as_str(), APP_NAME, self.title),
@@ -399,25 +412,140 @@ fn shadow_cycle_decision_alert_event(
 }
 
 async fn send_event(config: &AlertConfig, event: &AlertEvent) -> Result<(), String> {
-    if !config.webhook_url.starts_with("https://") && !config.webhook_url.starts_with("http://") {
-        return Err("webhook URL must start with http:// or https://".to_owned());
-    }
-
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .map_err(|error| error.to_string())?;
-    let response = client
-        .post(&config.webhook_url)
-        .json(&json!({ "text": event.text(&config.environment) }))
+    let created_at_ms = now_ms();
+    let priority = event.priority.as_str();
+    let event_id = stable_id(
+        "pipeline_alert",
+        &[APP_NAME, priority, &event.title, &created_at_ms.to_string()],
+    );
+    let dedupe_key = stable_id(
+        "pipeline_alert_dedupe",
+        &[
+            APP_NAME,
+            priority,
+            &event.title,
+            &event.conclusion,
+            &event.current_state.join("\n"),
+            &event.reasons.join("\n"),
+        ],
+    );
+    let payload = PipelineAlertEvent::from_alert_event(
+        event,
+        &event_id,
+        &dedupe_key,
+        &config.environment,
+        created_at_ms,
+    );
+    let key = pipeline_alert_event_key(
+        &config.event_prefix,
+        created_at_ms,
+        APP_NAME,
+        priority,
+        &event_id,
+    )?;
+    let body = serde_json::to_vec_pretty(&payload).map_err(|error| error.to_string())?;
+    s3_client()
+        .await?
+        .put_object()
+        .bucket(&config.event_bucket)
+        .key(key)
+        .content_type("application/json")
+        .body(ByteStream::from(body))
         .send()
         .await
         .map_err(|error| error.to_string())?;
-    let status = response.status();
-    if !status.is_success() {
-        return Err(format!("webhook returned HTTP {status}"));
-    }
     Ok(())
+}
+
+#[derive(Debug, Serialize)]
+struct PipelineAlertEvent<'a> {
+    schema_version: &'static str,
+    event_id: &'a str,
+    dedupe_key: &'a str,
+    app: &'static str,
+    environment: &'a str,
+    priority: &'static str,
+    title: &'a str,
+    conclusion: &'a str,
+    current_state: &'a [String],
+    reasons: &'a [String],
+    next_actions: &'a [String],
+    safety: &'a [String],
+    created_at_ms: i64,
+}
+
+impl<'a> PipelineAlertEvent<'a> {
+    fn from_alert_event(
+        event: &'a AlertEvent,
+        event_id: &'a str,
+        dedupe_key: &'a str,
+        environment: &'a str,
+        created_at_ms: i64,
+    ) -> Self {
+        Self {
+            schema_version: "pipeline_alert_event_v1",
+            event_id,
+            dedupe_key,
+            app: APP_NAME,
+            environment,
+            priority: event.priority.as_str(),
+            title: &event.title,
+            conclusion: &event.conclusion,
+            current_state: &event.current_state,
+            reasons: &event.reasons,
+            next_actions: &event.next_actions,
+            safety: &event.safety,
+            created_at_ms,
+        }
+    }
+}
+
+async fn s3_client() -> Result<Client, String> {
+    let mut loader = aws_config::defaults(BehaviorVersion::latest());
+    if let Some(region) = env_string("AWS_REGION").or_else(|| env_string("AWS_DEFAULT_REGION")) {
+        loader = loader.region(Region::new(region));
+    }
+    let config = loader.load().await;
+    Ok(Client::new(&config))
+}
+
+fn pipeline_alert_event_key(
+    prefix: &str,
+    created_at_ms: i64,
+    app: &str,
+    priority: &str,
+    event_id: &str,
+) -> Result<String, String> {
+    let created_at = DateTime::<Utc>::from_timestamp_millis(created_at_ms)
+        .ok_or_else(|| "created_at_ms is outside supported timestamp range".to_owned())?;
+    Ok(format!(
+        "{}/dt={:04}-{:02}-{:02}/hour={:02}/app={}/priority={}/{}.json",
+        prefix.trim().trim_matches('/'),
+        created_at.year(),
+        created_at.month(),
+        created_at.day(),
+        created_at.hour(),
+        s3_key_token(app),
+        s3_key_token(priority),
+        s3_key_token(event_id),
+    ))
+}
+
+fn s3_key_token(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| match character {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' | '=' => character,
+            _ => '_',
+        })
+        .collect()
+}
+
+fn env_string(name: &str) -> Option<String> {
+    env::var(name)
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
 }
 
 fn bias_counts(report: &ResearchRunReport) -> BTreeMap<&'static str, usize> {
@@ -579,10 +707,12 @@ fn env_bool(name: &str) -> bool {
         .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
 }
 
+#[cfg(test)]
 fn bullet_lines(values: &[String]) -> Vec<String> {
     values.iter().map(|value| format!("- {value}")).collect()
 }
 
+#[cfg(test)]
 fn append_section(sections: &mut Vec<String>, title: &str, values: &[String]) {
     if values.is_empty() {
         return;
@@ -881,34 +1011,27 @@ mod tests {
         assert!(event.text("dev").contains("order_execution_enabled: true"));
     }
 
-    #[tokio::test]
-    async fn send_event_rejects_invalid_webhook_url_before_http_call() {
-        let config = AlertConfig {
-            webhook_url: "not-a-url".to_owned(),
-            environment: "dev".to_owned(),
-            min_priority: AlertPriority::P0,
-            include_retest_summary: false,
-            include_shadow_wait: false,
-        };
-        let event = AlertEvent {
-            priority: AlertPriority::P0,
-            title: "test".to_owned(),
-            conclusion: "test".to_owned(),
-            current_state: Vec::new(),
-            reasons: Vec::new(),
-            next_actions: Vec::new(),
-            safety: Vec::new(),
-        };
+    #[test]
+    fn pipeline_alert_event_key_is_hour_partitioned() {
+        let key = pipeline_alert_event_key(
+            "pipeline-alert-event/schema=pipeline_alert_event_v1/",
+            1779937200123,
+            "research-app",
+            "P2",
+            "pipeline_alert_abc123",
+        )
+        .expect("timestamp is valid");
 
-        let error = send_event(&config, &event)
-            .await
-            .expect_err("URL is rejected");
-        assert_eq!(error, "webhook URL must start with http:// or https://");
+        assert_eq!(
+            key,
+            "pipeline-alert-event/schema=pipeline_alert_event_v1/dt=2026-05-28/hour=03/app=research-app/priority=P2/pipeline_alert_abc123.json"
+        );
     }
 
     fn test_config(min_priority: AlertPriority) -> AlertConfig {
         AlertConfig {
-            webhook_url: "https://example.com/hook".to_owned(),
+            event_bucket: "nangman-crypto-dev-research-962214".to_owned(),
+            event_prefix: DEFAULT_PIPELINE_ALERT_S3_PREFIX.to_owned(),
             environment: "dev".to_owned(),
             min_priority,
             include_retest_summary: false,

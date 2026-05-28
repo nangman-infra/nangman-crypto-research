@@ -53,6 +53,26 @@ phases:
         for container in task_definition["containerDefinitions"]:
             if container["name"] == container_name:
                 container["image"] = image_uri
+                container["secrets"] = [
+                    secret
+                    for secret in container.get("secrets", [])
+                    if secret.get("name") != "NANGMAN_ALERT_WEBHOOK_URL"
+                ]
+                environment = {
+                    item["name"]: item["value"]
+                    for item in container.get("environment", [])
+                }
+                output_bucket = environment.get("RESEARCH_OUTPUT_S3_BUCKET", "")
+                if output_bucket:
+                    environment["NANGMAN_PIPELINE_ALERT_S3_BUCKET"] = output_bucket
+                    environment["NANGMAN_PIPELINE_ALERT_S3_PREFIX"] = (
+                        "pipeline-alert-event/schema=pipeline_alert_event_v1"
+                    )
+                container["environment"] = [
+                    {"name": name, "value": value}
+                    for name, value in sorted(environment.items())
+                    if value
+                ]
                 break
         else:
             raise SystemExit(f"container not found in task definition: {container_name}")

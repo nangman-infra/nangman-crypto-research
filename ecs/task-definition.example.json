@@ -57,12 +57,14 @@
         {
           "name": "NANGMAN_ALERT_MIN_PRIORITY",
           "value": "P2"
-        }
-      ],
-      "secrets": [
+        },
         {
-          "name": "NANGMAN_ALERT_WEBHOOK_URL",
-          "valueFrom": "arn:aws:secretsmanager:ap-northeast-2:<aws-account-id>:secret:nangman/dev/mattermost/webhook"
+          "name": "NANGMAN_PIPELINE_ALERT_S3_BUCKET",
+          "value": "nangman-crypto-dev-research-<account-suffix>"
+        },
+        {
+          "name": "NANGMAN_PIPELINE_ALERT_S3_PREFIX",
+          "value": "pipeline-alert-event/schema=pipeline_alert_event_v1"
         }
       ],
       "logConfiguration": {

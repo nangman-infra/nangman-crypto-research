@@ -115,17 +115,19 @@ RISK_REVIEW: paper 관찰 중 -200 bps 이하 손실 구간 발생
 SHADOW_REVIEW_CANDIDATE: 목표 보유시간 구간에 도달했고 수익/손실 조건이 양호함
 ```
 
-## Mattermost Alerts
+## Pipeline Alerts
 
-`research-app` can emit human-readable Mattermost alerts for events that need
-operator attention. Delivery is best-effort: a webhook failure is logged to
-stderr and does not fail the research run.
+`research-app` emits operator alerts as `pipeline_alert_event_v1` JSON objects
+under S3. It does not call the Mattermost webhook directly from ECS. The central
+`lmbd-nangman-dev-pipeline-alert-apn2` Lambda reads those objects, applies
+priority filtering and dedupe, then sends the human-readable Mattermost message.
 
-Configure the webhook through secrets or task environment. Do not commit the
-real URL.
+Alert delivery is best-effort: an alert write failure is logged to stderr and
+does not fail the research run.
 
 ```bash
-NANGMAN_ALERT_WEBHOOK_URL=<mattermost-webhook-url>
+NANGMAN_PIPELINE_ALERT_S3_BUCKET=nangman-crypto-dev-research-<account-suffix>
+NANGMAN_PIPELINE_ALERT_S3_PREFIX=pipeline-alert-event/schema=pipeline_alert_event_v1
 NANGMAN_ALERT_ENV=dev
 NANGMAN_ALERT_MIN_PRIORITY=P2
 ```
