@@ -53,15 +53,15 @@ use crate::storage::{
     discover_latest_symbol_universe_snapshot_end_ms_from_s3,
     discover_paper_watch_candidate_keys_from_s3, discover_paper_watch_live_mark_keys_from_s3,
     discover_replay_run_index_keys_from_s3, discover_shadow_validation_run_keys_from_s3,
-    read_candidate_bundles_from_s3, read_latest_retest_cycle_source_state_from_s3,
-    read_latest_retest_horizon_status_from_s3, read_market_feature_deltas_from_s3,
-    read_market_regime_contexts_from_s3, read_oss_adapter_runs_from_s3,
-    read_paper_watch_candidates_from_s3, read_paper_watch_live_marks_from_s3,
-    read_replay_run_index_records_from_s3, read_replay_runs_from_s3,
-    read_research_input_manifest_from_s3, read_research_run_report_from_s3,
-    read_retest_horizon_plan_from_s3, read_retest_horizon_status_from_s3,
-    read_shadow_validation_runs_from_s3, write_paper_watch_live_marks_to_s3,
-    write_paper_watch_observer_snapshot_to_s3,
+    hourly_partitioned_prefix, read_candidate_bundles_from_s3,
+    read_latest_retest_cycle_source_state_from_s3, read_latest_retest_horizon_status_from_s3,
+    read_market_feature_deltas_from_s3, read_market_regime_contexts_from_s3,
+    read_oss_adapter_runs_from_s3, read_paper_watch_candidates_from_s3,
+    read_paper_watch_live_marks_from_s3, read_replay_run_index_records_from_s3,
+    read_replay_runs_from_s3, read_research_input_manifest_from_s3,
+    read_research_run_report_from_s3, read_retest_horizon_plan_from_s3,
+    read_retest_horizon_status_from_s3, read_shadow_validation_runs_from_s3,
+    write_paper_watch_live_marks_to_s3, write_paper_watch_observer_snapshot_to_s3,
     write_research_input_manifest_to_exact_s3_key_if_absent, write_research_input_manifest_to_s3,
     write_research_outputs_to_s3, write_retest_cycle_source_state_to_s3,
     write_retest_horizon_plan_to_s3, write_retest_horizon_status_to_s3,
@@ -1452,9 +1452,13 @@ async fn restore_paper_watch_observer_state(
     let Some(bucket) = args.output_s3_bucket.as_deref() else {
         return Ok(0);
     };
+    let restore_prefix = hourly_partitioned_prefix(
+        &args.paper_watch_live_mark_s3_prefix,
+        args.now_ms.unwrap_or_else(now_ms),
+    )?;
     let keys = discover_paper_watch_live_mark_keys_from_s3(
         bucket,
-        &args.paper_watch_live_mark_s3_prefix,
+        &restore_prefix,
         args.paper_watch_live_mark_read_limit,
         args.paper_watch_live_mark_scan_limit,
     )

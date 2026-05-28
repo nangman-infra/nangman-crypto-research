@@ -400,6 +400,16 @@ pub async fn discover_paper_watch_live_mark_keys_from_s3(
     .await
 }
 
+pub fn hourly_partitioned_prefix(prefix: &str, timestamp_ms: i64) -> AppResult<String> {
+    let dt = partition(timestamp_ms)?;
+    Ok(format!(
+        "{}dt={}/hour={:02}/",
+        normalize_prefix(prefix),
+        dt.date,
+        dt.hour
+    ))
+}
+
 async fn discover_latest_part_jsonl_keys_from_s3(
     bucket: &str,
     prefix: &str,
@@ -1500,6 +1510,18 @@ mod tests {
                 "replay-run-index/schema=x/dt=2026-05-23/part-000001.jsonl",
                 "replay-run-index/schema=x/dt=2026-05-21/part-000001.jsonl",
             ]
+        );
+    }
+
+    #[test]
+    fn hourly_partitioned_prefix_narrows_observer_restore_scan() {
+        assert_eq!(
+            hourly_partitioned_prefix(
+                "paper-watch-live-mark/schema=paper_watch_live_mark_v1",
+                1_779_935_219_010,
+            )
+            .expect("valid prefix"),
+            "paper-watch-live-mark/schema=paper_watch_live_mark_v1/dt=2026-05-28/hour=02/"
         );
     }
 }
