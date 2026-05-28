@@ -135,7 +135,7 @@ pub async fn emit_research_report_alert_from_env(
         return;
     };
     if let Err(error) = send_event(&config, &event).await {
-        eprintln!("mattermost alert delivery failed: {error}");
+        eprintln!("pipeline alert delivery failed: {error}");
     }
 }
 
@@ -147,7 +147,7 @@ pub async fn emit_paper_watch_live_mark_alert_from_env(marks: &[PaperWatchLiveMa
         return;
     };
     if let Err(error) = send_event(&config, &event).await {
-        eprintln!("mattermost alert delivery failed: {error}");
+        eprintln!("pipeline alert delivery failed: {error}");
     }
 }
 
@@ -159,7 +159,7 @@ pub async fn emit_shadow_cycle_decision_alert_from_env(decision: &ShadowCycleDec
         return;
     };
     if let Err(error) = send_event(&config, &event).await {
-        eprintln!("mattermost alert delivery failed: {error}");
+        eprintln!("pipeline alert delivery failed: {error}");
     }
 }
 
