@@ -412,7 +412,31 @@ fn shadow_cycle_decision_alert_event(
 }
 
 async fn send_event(config: &AlertConfig, event: &AlertEvent) -> Result<(), String> {
-    let created_at_ms = now_ms();
+    let delivery = build_pipeline_alert_delivery(config, event, now_ms())?;
+    s3_client()
+        .await?
+        .put_object()
+        .bucket(&config.event_bucket)
+        .key(delivery.key)
+        .content_type("application/json")
+        .body(ByteStream::from(delivery.body))
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PipelineAlertDelivery {
+    key: String,
+    body: Vec<u8>,
+}
+
+fn build_pipeline_alert_delivery(
+    config: &AlertConfig,
+    event: &AlertEvent,
+    created_at_ms: i64,
+) -> Result<PipelineAlertDelivery, String> {
     let priority = event.priority.as_str();
     let event_id = stable_id(
         "pipeline_alert",
@@ -444,17 +468,7 @@ async fn send_event(config: &AlertConfig, event: &AlertEvent) -> Result<(), Stri
         &event_id,
     )?;
     let body = serde_json::to_vec_pretty(&payload).map_err(|error| error.to_string())?;
-    s3_client()
-        .await?
-        .put_object()
-        .bucket(&config.event_bucket)
-        .key(key)
-        .content_type("application/json")
-        .body(ByteStream::from(body))
-        .send()
-        .await
-        .map_err(|error| error.to_string())?;
-    Ok(())
+    Ok(PipelineAlertDelivery { key, body })
 }
 
 #[derive(Debug, Serialize)]
@@ -1056,6 +1070,43 @@ mod tests {
         assert_eq!(json["current_state"][0], "관찰 코인: DOGE, XRP");
         assert_eq!(json["safety"][0], "실제 주문: 꺼짐");
         assert_eq!(json["created_at_ms"], 1779937200123_i64);
+    }
+
+    #[test]
+    fn build_pipeline_alert_delivery_writes_expected_key_and_body() {
+        let config = test_config(AlertPriority::P2);
+        let event = AlertEvent {
+            priority: AlertPriority::P2,
+            title: "PROMOTE_TO_SHADOW 후보 발생".to_owned(),
+            conclusion: "후보가 shadow 관측 단계로 올라갔습니다.".to_owned(),
+            current_state: vec!["shadow 관찰 생성: 1개".to_owned()],
+            reasons: vec!["deterministic_shadow_gate_passed: 1개".to_owned()],
+            next_actions: vec!["주문 실행은 계속 꺼둡니다.".to_owned()],
+            safety: vec!["실제 주문: 꺼짐".to_owned()],
+        };
+
+        let delivery = build_pipeline_alert_delivery(&config, &event, 1779937200123)
+            .expect("delivery is built");
+        let payload: serde_json::Value =
+            serde_json::from_slice(&delivery.body).expect("body is valid json");
+
+        assert!(delivery.key.starts_with(
+            "pipeline-alert-event/schema=pipeline_alert_event_v1/dt=2026-05-28/hour=03/app=research-app/priority=P2/"
+        ));
+        assert_eq!(payload["schema_version"], "pipeline_alert_event_v1");
+        assert_eq!(payload["environment"], "dev");
+        assert_eq!(payload["title"], "PROMOTE_TO_SHADOW 후보 발생");
+        assert_eq!(payload["next_actions"][0], "주문 실행은 계속 꺼둡니다.");
+        assert!(
+            payload["event_id"]
+                .as_str()
+                .is_some_and(|value| value.starts_with("pipeline_alert_"))
+        );
+        assert!(
+            payload["dedupe_key"]
+                .as_str()
+                .is_some_and(|value| value.starts_with("pipeline_alert_dedupe_"))
+        );
     }
 
     #[test]
