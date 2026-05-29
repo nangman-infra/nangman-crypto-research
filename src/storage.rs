@@ -15,7 +15,6 @@ use crate::model::{
 };
 use crate::retest_cycle::read_retest_horizon_status_from_bytes;
 use crate::retest_status::read_retest_horizon_plan_from_bytes;
-use std::collections::BTreeSet;
 
 mod client;
 mod listing;
