@@ -1,0 +1,41 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetestHorizonPlanBuildOptions {
+    pub generated_at_ms: i64,
+    pub manifest_label: String,
+    pub report_label: String,
+    pub latest_l1_as_of_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct HorizonPlanRow {
+    pub(super) candidate_id: String,
+    pub(super) candidate_lifecycle_key: String,
+    pub(super) symbols: Vec<String>,
+    pub(super) primary_symbol: Option<String>,
+    pub(super) hypothesis_type: String,
+    pub(super) research_priority: String,
+    pub(super) horizon: String,
+    pub(super) horizon_ms: Option<i64>,
+    pub(super) decision_available_at_ms: i64,
+    pub(super) forbidden_lookahead_boundary_ms: i64,
+    pub(super) horizon_due_ms: Option<i64>,
+    pub(super) latest_l1_as_of_ms: Option<i64>,
+    pub(super) horizon_market_data_materialized: Option<bool>,
+    pub(super) replay_run_count: usize,
+    pub(super) completed_count: usize,
+    pub(super) effective_completed_sample_weight: f64,
+    pub(super) completed_sample_deficit: usize,
+    pub(super) inferred_unseen_window_count: usize,
+    pub(super) required_unseen_window_count: usize,
+    pub(super) unseen_window_deficit: usize,
+    pub(super) train_validation_split_required: bool,
+    pub(super) train_validation_split_materialized: bool,
+    pub(super) liquidity_filter_required: bool,
+    pub(super) liquidity_filter_materialized_count: usize,
+    pub(super) missing_market_replay_data_count: usize,
+    pub(super) aggregate_count: usize,
+    pub(super) gate_biases: Vec<String>,
+    pub(super) reason_codes: Vec<String>,
+    pub(super) candidate_reason_codes: Vec<String>,
+    pub(super) next_action: String,
+}

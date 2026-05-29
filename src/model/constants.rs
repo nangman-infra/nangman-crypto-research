@@ -1,0 +1,36 @@
+pub const CANDIDATE_BUNDLE_SCHEMA_VERSION: &str = "intel_candidate_evidence_bundle_v1";
+pub const RESEARCH_INPUT_MANIFEST_SCHEMA_VERSION: &str = "research_input_manifest_v1";
+pub const REPLAY_RUN_SCHEMA_VERSION: &str = "replay_run_v1";
+pub const REPLAY_RUN_INDEX_SCHEMA_VERSION: &str = "replay_run_index_v1";
+pub const RESEARCH_AGGREGATE_REGISTRY_SCHEMA_VERSION: &str =
+    "research_aggregate_registry_record_v1";
+pub const RESEARCH_RUN_REPORT_SCHEMA_VERSION: &str = "research_run_report_v1";
+pub const NATIVE_REPLAY_ADAPTER: &str = "native_replay";
+pub const DEFAULT_COST_MODEL_VERSION: &str = "research_cost_model_v0_2026_05_09";
+pub const DEFAULT_VALIDATION_RECIPE_VERSION: &str = "native_replay_recipe_v0_2026_05_09";
+pub const DEFAULT_RESEARCH_GATE_POLICY_VERSION: &str = "research_gate_policy_v1_2026_05_09";
+pub const SHADOW_VALIDATION_RUN_SCHEMA_VERSION: &str = "shadow_validation_run_v1";
+pub const PAPER_TRADE_CANDIDATE_SCHEMA_VERSION: &str = "paper_trade_candidate_v1";
+pub const PAPER_TRADE_RUN_SCHEMA_VERSION: &str = "paper_trade_run_v1";
+pub const PAPER_TRADE_SUMMARY_SCHEMA_VERSION: &str = "paper_trade_summary_v1";
+pub const PAPER_TRADE_MARK_SCHEMA_VERSION: &str = "paper_trade_mark_v1";
+pub const PAPER_WATCH_CANDIDATE_SCHEMA_VERSION: &str = "paper_watch_candidate_v1";
+pub const MARKET_LIVE_TICK_SCHEMA_VERSION: &str = "market_live_tick_v1";
+pub const PAPER_WATCH_LIVE_MARK_SCHEMA_VERSION: &str = "paper_watch_live_mark_v1";
+pub const PAPER_ACCOUNT_PROFILE_SCHEMA_VERSION: &str = "paper_account_profile_v1";
+pub const DEFAULT_PAPER_ACCOUNT_PROFILE_ID: &str = "research_app_internal_paper_profile_v1";
+pub const DEFAULT_PAPER_FEE_MODEL_VERSION: &str = "research_paper_fee_model_v1";
+pub const DEFAULT_PAPER_SLIPPAGE_MODEL_VERSION: &str = "research_paper_slippage_model_v1";
+pub const OSS_ADAPTER_RUN_SCHEMA_VERSION: &str = "oss_adapter_run_v1";
+pub const PORTFOLIO_ALLOCATION_SNAPSHOT_SCHEMA_VERSION: &str = "portfolio_allocation_snapshot_v1";
+pub const PORTFOLIO_RISK_REJECT_EVENT_SCHEMA_VERSION: &str = "portfolio_risk_reject_event_v1";
+pub const PORTFOLIO_REDUCE_ONLY_SIGNAL_SCHEMA_VERSION: &str = "portfolio_reduce_only_signal_v1";
+pub const SHADOW_CYCLE_DECISION_SCHEMA_VERSION: &str = "research_shadow_cycle_decision_v1";
+pub const RETEST_HORIZON_PLAN_SCHEMA_VERSION: &str = "research_retest_horizon_plan_v1";
+pub const RETEST_HORIZON_STATUS_SCHEMA_VERSION: &str = "research_horizon_status_checkpoint_v1";
+pub const RETEST_CYCLE_SOURCE_STATE_SCHEMA_VERSION: &str = "research_retest_cycle_source_state_v1";
+pub const FOCUSED_RETEST_MANIFEST_SUMMARY_SCHEMA_VERSION: &str =
+    "research_focused_retest_manifest_summary_v1";
+pub const HOLDING_POLICY_VERSION: &str = "crypto_intraday_holding_policy_v1_2026_05_12";
+pub const TARGET_MAX_HOLDING_HOURS: u32 = 24;
+pub const ABSOLUTE_MAX_HOLDING_HOURS: u32 = 72;
