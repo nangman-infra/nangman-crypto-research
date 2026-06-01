@@ -100,6 +100,10 @@ validate_task_definition() {
     echo "RESEARCH_MARKET_L1_S3_BUCKET is missing from task definition" >&2
     exit 1
   fi
+  if [[ "$history_index_prefix" == "replay-run-index/" ]]; then
+    echo "RESEARCH_HISTORICAL_REPLAY_RUN_INDEX_S3_PREFIX uses the broad replay-run-index/ prefix; remove it or set a narrowed prefix" >&2
+    exit 1
+  fi
 }
 
 print_task_definition_summary() {

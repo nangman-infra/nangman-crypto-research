@@ -43,10 +43,6 @@
           "value": "nangman-crypto-dev-research-<account-suffix>"
         },
         {
-          "name": "RESEARCH_HISTORICAL_REPLAY_RUN_INDEX_S3_PREFIX",
-          "value": "replay-run-index/"
-        },
-        {
           "name": "RESEARCH_HISTORICAL_REPLAY_RUN_INDEX_S3_READ_LIMIT",
           "value": "20"
         },

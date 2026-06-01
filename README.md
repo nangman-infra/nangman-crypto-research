@@ -108,7 +108,8 @@ Smoke test처럼 한 번만 돌릴 때는 다음 옵션을 붙입니다.
 CodeBuild가 observer task definition을 등록할 때는
 `RESEARCH_MARKET_LIVE_NATS_URL`을 CodeBuild 환경변수나 기존 observer task
 definition 환경변수로 제공해야 합니다. repo에는 private NATS host 값을
-커밋하지 않습니다.
+커밋하지 않습니다. 배포 buildspec은 기존 observer task definition의
+paper-watch/NATS 환경변수를 먼저 보존한 뒤 새 image revision만 적용합니다.
 
 운영 판단 기준:
 
@@ -380,9 +381,11 @@ configuration is not part of the app contract.
 When `RESEARCH_HISTORICAL_REPLAY_RUN_INDEX_S3_PREFIX` is set, the app discovers
 the latest `replay-run-index/.../part-000001.jsonl` objects under that prefix
 and loads the referenced historical replay samples before running the aggregate
-gate. This lets S3-triggered candidate runs accumulate replay evidence without a
-separate manifest for every dispatch. The discovery path is read-only and is
-bounded by `READ_LIMIT` and `SCAN_LIMIT`.
+gate. Use a narrowed prefix, not the broad `replay-run-index/` root, for runtime
+task definitions. The deployment buildspec removes that broad root prefix from
+new task definition revisions so scheduler tasks do not repeatedly scan a
+truncated S3 listing. The discovery path is read-only and is bounded by
+`READ_LIMIT` and `SCAN_LIMIT`.
 Historical replay samples are filtered to aggregate keys produced by the current
 manifest's candidate bundles before they enter the gate. This preserves same
 symbol/horizon accumulation while preventing unrelated symbols from appearing in
@@ -633,6 +636,11 @@ S3 is still the durable state truth. The Scheduler is only a wake-up signal for
 checking whether the latest source state and Market-L1 horizon require another
 focused retest manifest. It must run on `FARGATE_SPOT`, use private subnets, and
 must not enable shadow, paper, live, or order execution.
+
+During CodePipeline deployment, the buildspec updates the retest refresh and
+shadow cycle EventBridge Scheduler targets to the newly registered research task
+definition revision. This prevents recurring schedules from continuing to run an
+older revision after the ECS image deployment succeeds.
 
 Example Scheduler support files:
 

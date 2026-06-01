@@ -9,6 +9,8 @@ env:
     ECS_OBSERVER_TASK_DEFINITION_FAMILY: td-nangman-dev-research-observer-apn2
     ECS_CLUSTER_NAME: ecs-nangman-dev-invest-apn2
     ECS_OBSERVER_SERVICE_NAME: svc-nangman-dev-research-observer
+    ECS_RESEARCH_RETEST_REFRESH_SCHEDULE_NAME: sch-nangman-dev-research-retest-refresh-apn2
+    ECS_RESEARCH_SHADOW_CYCLE_SCHEDULE_NAME: sch-nangman-dev-research-shadow-cycle-apn2
     DOCKER_BUILDKIT: "1"
 
 phases:
@@ -28,101 +30,148 @@ phases:
     commands:
       - docker push "${IMAGE_URI}"
       - aws ecs describe-task-definition --task-definition "${ECS_TASK_DEFINITION_FAMILY}" > current-task-definition.json
+      - aws ecs describe-task-definition --task-definition "${ECS_OBSERVER_TASK_DEFINITION_FAMILY}" > current-observer-task-definition.json || printf '{}' > current-observer-task-definition.json
       - |
         python3 - <<'PY'
+        import copy
         import json
         import os
 
-        with open("current-task-definition.json", "r", encoding="utf-8") as handle:
-            task_definition = json.load(handle)["taskDefinition"]
+        STALE_BROAD_REPLAY_INDEX_PREFIX = "replay-run-index/"
+        OBSERVER_ENV_PREFIXES = (
+            "RESEARCH_MARKET_LIVE_",
+            "RESEARCH_PAPER_WATCH_",
+        )
+        OBSERVER_ENV_NAMES = {
+            "RESEARCH_RUN_PAPER_WATCH_OBSERVER",
+            "RESEARCH_OUTPUT_S3_PREFIX",
+        }
 
-        for field in [
-            "taskDefinitionArn",
-            "revision",
-            "status",
-            "requiresAttributes",
-            "compatibilities",
-            "registeredAt",
-            "registeredBy",
-            "deregisteredAt",
-        ]:
-            task_definition.pop(field, None)
+        def load_task_definition(path):
+            with open(path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            return payload.get("taskDefinition") or {}
 
-        container_name = os.environ["ECS_CONTAINER_NAME"]
-        image_uri = os.environ["IMAGE_URI"]
-        for container in task_definition["containerDefinitions"]:
-            if container["name"] == container_name:
-                container["image"] = image_uri
-                container["secrets"] = [
-                    secret
-                    for secret in container.get("secrets", [])
-                    if secret.get("name") != "NANGMAN_ALERT_WEBHOOK_URL"
-                ]
-                environment = {
-                    item["name"]: item["value"]
-                    for item in container.get("environment", [])
-                }
-                output_bucket = environment.get("RESEARCH_OUTPUT_S3_BUCKET", "")
-                if output_bucket:
-                    environment["NANGMAN_PIPELINE_ALERT_S3_BUCKET"] = output_bucket
-                    environment["NANGMAN_PIPELINE_ALERT_S3_PREFIX"] = (
-                        "pipeline-alert-event/schema=pipeline_alert_event_v1"
-                    )
-                container["environment"] = [
-                    {"name": name, "value": value}
-                    for name, value in sorted(environment.items())
-                    if value
-                ]
-                break
-        else:
-            raise SystemExit(f"container not found in task definition: {container_name}")
+        def strip_registration_fields(task_definition):
+            task_definition = copy.deepcopy(task_definition)
+            for field in [
+                "taskDefinitionArn",
+                "revision",
+                "status",
+                "requiresAttributes",
+                "compatibilities",
+                "registeredAt",
+                "registeredBy",
+                "deregisteredAt",
+            ]:
+                task_definition.pop(field, None)
+            return task_definition
 
-        with open("register-task-definition.json", "w", encoding="utf-8") as handle:
-            json.dump(task_definition, handle)
+        def find_container(task_definition, container_name):
+            for container in task_definition.get("containerDefinitions", []):
+                if container.get("name") == container_name:
+                    return container
+            return None
 
-        observer_task_definition = json.loads(json.dumps(task_definition))
-        observer_task_definition["family"] = os.environ["ECS_OBSERVER_TASK_DEFINITION_FAMILY"]
-        output_bucket = ""
-        for container in observer_task_definition["containerDefinitions"]:
-            if container["name"] != container_name:
-                continue
-            environment = {
+        def require_container(task_definition, container_name):
+            container = find_container(task_definition, container_name)
+            if container is None:
+                raise SystemExit(f"container not found in task definition: {container_name}")
+            return container
+
+        def environment_map(container):
+            return {
                 item["name"]: item["value"]
                 for item in container.get("environment", [])
             }
-            output_bucket = environment.get("RESEARCH_OUTPUT_S3_BUCKET", "")
-            market_live_nats_url = (
-                os.environ.get("RESEARCH_MARKET_LIVE_NATS_URL")
-                or environment.get("RESEARCH_MARKET_LIVE_NATS_URL", "")
-            )
-            if market_live_nats_url != market_live_nats_url.strip():
-                raise SystemExit(
-                    "RESEARCH_MARKET_LIVE_NATS_URL must not have leading or trailing whitespace"
-                )
-            if not market_live_nats_url:
-                raise SystemExit("RESEARCH_MARKET_LIVE_NATS_URL is required for observer task definition")
-            if not market_live_nats_url.startswith("nats://"):
-                raise SystemExit("RESEARCH_MARKET_LIVE_NATS_URL must start with nats://")
-            environment.update({
-                "RESEARCH_RUN_PAPER_WATCH_OBSERVER": "true",
-                "RESEARCH_PAPER_WATCH_CANDIDATE_S3_BUCKET": output_bucket,
-                "RESEARCH_PAPER_WATCH_CANDIDATE_S3_PREFIX": "paper-watch-candidate/schema=paper_watch_candidate_v1",
-                "RESEARCH_PAPER_WATCH_LIVE_MARK_S3_PREFIX": "paper-watch-live-mark/schema=paper_watch_live_mark_v1",
-                "RESEARCH_OUTPUT_S3_PREFIX": "paper-watch-observer-state/schema=paper_watch_observer_snapshot_v1",
-                "RESEARCH_MARKET_LIVE_NATS_URL": market_live_nats_url,
-                "RESEARCH_MARKET_LIVE_NATS_BATCH_SIZE": "20",
-                "RESEARCH_MARKET_LIVE_NATS_MAX_MESSAGES": "60",
-                "RESEARCH_PAPER_WATCH_OBSERVER_POLL_SECS": "5",
-            })
-            container["environment"] = [
+
+        def remove_stale_environment(environment):
+            if (
+                environment.get("RESEARCH_HISTORICAL_REPLAY_RUN_INDEX_S3_PREFIX")
+                == STALE_BROAD_REPLAY_INDEX_PREFIX
+            ):
+                environment.pop("RESEARCH_HISTORICAL_REPLAY_RUN_INDEX_S3_PREFIX", None)
+            return environment
+
+        def render_environment(environment):
+            return [
                 {"name": name, "value": value}
                 for name, value in sorted(environment.items())
                 if value
             ]
-            container.pop("command", None)
-            break
-        else:
-            raise SystemExit(f"container not found in observer task definition: {container_name}")
+
+        task_definition = strip_registration_fields(
+            load_task_definition("current-task-definition.json")
+        )
+        if not task_definition:
+            raise SystemExit("current task definition is empty")
+
+        container_name = os.environ["ECS_CONTAINER_NAME"]
+        image_uri = os.environ["IMAGE_URI"]
+        container = require_container(task_definition, container_name)
+        container["image"] = image_uri
+        container["secrets"] = [
+            secret
+            for secret in container.get("secrets", [])
+            if secret.get("name") != "NANGMAN_ALERT_WEBHOOK_URL"
+        ]
+        environment = remove_stale_environment(environment_map(container))
+        output_bucket = environment.get("RESEARCH_OUTPUT_S3_BUCKET", "")
+        if output_bucket:
+            environment["NANGMAN_PIPELINE_ALERT_S3_BUCKET"] = output_bucket
+            environment["NANGMAN_PIPELINE_ALERT_S3_PREFIX"] = (
+                "pipeline-alert-event/schema=pipeline_alert_event_v1"
+            )
+        container["environment"] = render_environment(environment)
+
+        with open("register-task-definition.json", "w", encoding="utf-8") as handle:
+            json.dump(task_definition, handle)
+
+        current_observer_task_definition = load_task_definition("current-observer-task-definition.json")
+        current_observer_container = find_container(
+            current_observer_task_definition,
+            container_name,
+        )
+        current_observer_environment = (
+            environment_map(current_observer_container)
+            if current_observer_container is not None
+            else {}
+        )
+
+        observer_task_definition = copy.deepcopy(task_definition)
+        observer_task_definition["family"] = os.environ["ECS_OBSERVER_TASK_DEFINITION_FAMILY"]
+        observer_container = require_container(observer_task_definition, container_name)
+        observer_environment = remove_stale_environment(environment_map(observer_container))
+        for name, value in current_observer_environment.items():
+            if name.startswith(OBSERVER_ENV_PREFIXES) or name in OBSERVER_ENV_NAMES:
+                observer_environment[name] = value
+
+        output_bucket = observer_environment.get("RESEARCH_OUTPUT_S3_BUCKET", "")
+        market_live_nats_url = (
+            os.environ.get("RESEARCH_MARKET_LIVE_NATS_URL")
+            or observer_environment.get("RESEARCH_MARKET_LIVE_NATS_URL", "")
+        )
+        if market_live_nats_url != market_live_nats_url.strip():
+            raise SystemExit(
+                "RESEARCH_MARKET_LIVE_NATS_URL must not have leading or trailing whitespace"
+            )
+        if not market_live_nats_url:
+            raise SystemExit("RESEARCH_MARKET_LIVE_NATS_URL is required for observer task definition")
+        if not market_live_nats_url.startswith("nats://"):
+            raise SystemExit("RESEARCH_MARKET_LIVE_NATS_URL must start with nats://")
+        observer_environment.update({
+            "RESEARCH_RUN_PAPER_WATCH_OBSERVER": "true",
+            "RESEARCH_PAPER_WATCH_CANDIDATE_S3_BUCKET": output_bucket,
+            "RESEARCH_PAPER_WATCH_CANDIDATE_S3_PREFIX": "paper-watch-candidate/schema=paper_watch_candidate_v1",
+            "RESEARCH_PAPER_WATCH_LIVE_MARK_S3_PREFIX": "paper-watch-live-mark/schema=paper_watch_live_mark_v1",
+            "RESEARCH_OUTPUT_S3_PREFIX": "paper-watch-observer-state/schema=paper_watch_observer_snapshot_v1",
+            "RESEARCH_MARKET_LIVE_NATS_URL": market_live_nats_url,
+        })
+        observer_environment.setdefault("RESEARCH_MARKET_LIVE_NATS_BATCH_SIZE", "20")
+        observer_environment.setdefault("RESEARCH_MARKET_LIVE_NATS_MAX_MESSAGES", "60")
+        observer_environment.setdefault("RESEARCH_PAPER_WATCH_OBSERVER_POLL_SECS", "5")
+        observer_container["environment"] = render_environment(observer_environment)
+        observer_container.pop("command", None)
 
         if not output_bucket:
             raise SystemExit("RESEARCH_OUTPUT_S3_BUCKET is required for observer task definition")
@@ -132,6 +181,7 @@ phases:
         PY
       - aws ecs register-task-definition --cli-input-json file://register-task-definition.json > registered-task-definition.json
       - aws ecs register-task-definition --cli-input-json file://register-observer-task-definition.json > registered-observer-task-definition.json
+      - TASK_DEFINITION_ARN="$(python3 -c 'import json; print(json.load(open("registered-task-definition.json"))["taskDefinition"]["taskDefinitionArn"])')"
       - OBSERVER_TASK_DEFINITION_ARN="$(python3 -c 'import json; print(json.load(open("registered-observer-task-definition.json"))["taskDefinition"]["taskDefinitionArn"])')"
       - OBSERVER_SERVICE_STATUS="$(aws ecs describe-services --cluster "${ECS_CLUSTER_NAME}" --services "${ECS_OBSERVER_SERVICE_NAME}" --query 'services[0].status' --output text 2>/dev/null || true)"
       - |
@@ -144,6 +194,51 @@ phases:
         else
           echo "observer service ${ECS_OBSERVER_SERVICE_NAME} is not ACTIVE; registered observer task definition only"
         fi
+      - |
+        for SCHEDULE_NAME in "${ECS_RESEARCH_RETEST_REFRESH_SCHEDULE_NAME}" "${ECS_RESEARCH_SHADOW_CYCLE_SCHEDULE_NAME}"; do
+          if [ -z "${SCHEDULE_NAME}" ]; then
+            continue
+          fi
+          SCHEDULE_JSON="schedule-${SCHEDULE_NAME}.json"
+          UPDATE_JSON="update-${SCHEDULE_NAME}.json"
+          if ! aws scheduler get-schedule --name "${SCHEDULE_NAME}" > "${SCHEDULE_JSON}" 2>/dev/null; then
+            echo "scheduler ${SCHEDULE_NAME} not found; skipping task definition update"
+            continue
+          fi
+          python3 - "${TASK_DEFINITION_ARN}" "${SCHEDULE_JSON}" "${UPDATE_JSON}" <<'PY'
+        import json
+        import sys
+
+        task_definition_arn, schedule_path, update_path = sys.argv[1:4]
+        with open(schedule_path, "r", encoding="utf-8") as handle:
+            schedule = json.load(handle)
+
+        target = schedule["Target"]
+        target.setdefault("EcsParameters", {})["TaskDefinitionArn"] = task_definition_arn
+        update = {
+            "Name": schedule["Name"],
+            "ScheduleExpression": schedule["ScheduleExpression"],
+            "FlexibleTimeWindow": schedule["FlexibleTimeWindow"],
+            "Target": target,
+            "State": schedule.get("State", "ENABLED"),
+        }
+        for field in [
+            "ActionAfterCompletion",
+            "Description",
+            "EndDate",
+            "GroupName",
+            "KmsKeyArn",
+            "ScheduleExpressionTimezone",
+            "StartDate",
+        ]:
+            if schedule.get(field) is not None:
+                update[field] = schedule[field]
+
+        with open(update_path, "w", encoding="utf-8") as handle:
+            json.dump(update, handle)
+        PY
+          aws scheduler update-schedule --cli-input-json "file://${UPDATE_JSON}"
+        done
       - printf '[{"name":"%s","imageUri":"%s"}]' "${ECS_CONTAINER_NAME}" "${IMAGE_URI}" > imagedefinitions.json
       - cat imagedefinitions.json
 

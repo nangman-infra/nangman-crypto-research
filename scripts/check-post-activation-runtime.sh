@@ -84,8 +84,8 @@ if [[ -z "$output_bucket" || "$output_bucket" == "null" ]]; then
   echo "RESEARCH_OUTPUT_S3_BUCKET is missing from task definition" >&2
   exit 1
 fi
-if [[ -z "$history_index_prefix" || "$history_index_prefix" == "null" ]]; then
-  echo "RESEARCH_HISTORICAL_REPLAY_RUN_INDEX_S3_PREFIX is missing from task definition" >&2
+if [[ "$history_index_prefix" == "replay-run-index/" ]]; then
+  echo "RESEARCH_HISTORICAL_REPLAY_RUN_INDEX_S3_PREFIX uses the broad replay-run-index/ prefix; remove it or set a narrowed prefix" >&2
   exit 1
 fi
 echo "task ok: ${TASK_DEFINITION}:${task_revision} ${cpu_arch}/${os_family} readonly=${readonly_root}" | redact
