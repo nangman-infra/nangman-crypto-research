@@ -11,9 +11,7 @@ where
     T: Serialize,
 {
     let path = output_path(output_dir, key)?;
-    let parent = output_parent(&path)?;
-    fs::create_dir_all(parent)?;
-    let mut file = File::create(&path)?;
+    let mut file = create_output_file(&path)?;
     serde_json::to_writer_pretty(&mut file, record)?;
     file.write_all(b"\n")?;
     Ok(path)
@@ -24,14 +22,24 @@ where
     T: Serialize,
 {
     let path = output_path(output_dir, key)?;
-    let parent = output_parent(&path)?;
-    fs::create_dir_all(parent)?;
-    let mut file = File::create(&path)?;
+    let mut file = create_output_file(&path)?;
     for record in records {
         serde_json::to_writer(&mut file, record)?;
         file.write_all(b"\n")?;
     }
     Ok(path)
+}
+
+pub(super) fn create_output_file(path: &Path) -> AppResult<File> {
+    let parent = output_parent(path)?;
+    fs::create_dir_all(parent)?;
+    if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        return Err(AppError::validation(format!(
+            "output path must not be a symlink: {}",
+            path.display()
+        )));
+    }
+    Ok(File::create(path)?)
 }
 
 fn output_parent(path: &Path) -> AppResult<&Path> {

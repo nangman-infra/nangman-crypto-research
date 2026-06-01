@@ -105,6 +105,11 @@ Smoke test처럼 한 번만 돌릴 때는 다음 옵션을 붙입니다.
 --paper-watch-observer-max-iterations 1
 ```
 
+CodeBuild가 observer task definition을 등록할 때는
+`RESEARCH_MARKET_LIVE_NATS_URL`을 CodeBuild 환경변수나 기존 observer task
+definition 환경변수로 제공해야 합니다. repo에는 private NATS host 값을
+커밋하지 않습니다.
+
 운영 판단 기준:
 
 ```text

@@ -3,6 +3,7 @@ use super::mode::validate_paper_watch_observer_mode_is_isolated;
 use super::output::validate_observer_output;
 use crate::cli::Args;
 use crate::error::{AppError, AppResult};
+use crate::path_validation::validate_config_absolute_path;
 
 pub(in crate::cli) fn validate_paper_watch_observer_args(args: &Args) -> AppResult<()> {
     validate_paper_watch_observer_mode_is_isolated(args)?;
@@ -29,12 +30,8 @@ fn validate_observer_candidate_input(args: &Args) -> AppResult<()> {
             "--run-paper-watch-observer uses --paper-watch-candidate-s3-prefix, not --paper-watch-candidate-s3-key",
         ));
     }
-    if let Some(path) = args.paper_watch_candidate_file.as_deref()
-        && !path.is_absolute()
-    {
-        return Err(AppError::config(
-            "RESEARCH_PAPER_WATCH_CANDIDATE_FILE must be an absolute path",
-        ));
+    if let Some(path) = args.paper_watch_candidate_file.as_deref() {
+        validate_config_absolute_path(path, "RESEARCH_PAPER_WATCH_CANDIDATE_FILE")?;
     }
     Ok(())
 }

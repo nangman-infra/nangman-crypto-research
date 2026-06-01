@@ -91,13 +91,25 @@ phases:
                 for item in container.get("environment", [])
             }
             output_bucket = environment.get("RESEARCH_OUTPUT_S3_BUCKET", "")
+            market_live_nats_url = (
+                os.environ.get("RESEARCH_MARKET_LIVE_NATS_URL")
+                or environment.get("RESEARCH_MARKET_LIVE_NATS_URL", "")
+            )
+            if market_live_nats_url != market_live_nats_url.strip():
+                raise SystemExit(
+                    "RESEARCH_MARKET_LIVE_NATS_URL must not have leading or trailing whitespace"
+                )
+            if not market_live_nats_url:
+                raise SystemExit("RESEARCH_MARKET_LIVE_NATS_URL is required for observer task definition")
+            if not market_live_nats_url.startswith("nats://"):
+                raise SystemExit("RESEARCH_MARKET_LIVE_NATS_URL must start with nats://")
             environment.update({
                 "RESEARCH_RUN_PAPER_WATCH_OBSERVER": "true",
                 "RESEARCH_PAPER_WATCH_CANDIDATE_S3_BUCKET": output_bucket,
                 "RESEARCH_PAPER_WATCH_CANDIDATE_S3_PREFIX": "paper-watch-candidate/schema=paper_watch_candidate_v1",
                 "RESEARCH_PAPER_WATCH_LIVE_MARK_S3_PREFIX": "paper-watch-live-mark/schema=paper_watch_live_mark_v1",
                 "RESEARCH_OUTPUT_S3_PREFIX": "paper-watch-observer-state/schema=paper_watch_observer_snapshot_v1",
-                "RESEARCH_MARKET_LIVE_NATS_URL": "nats://192.168.10.45:4222",
+                "RESEARCH_MARKET_LIVE_NATS_URL": market_live_nats_url,
                 "RESEARCH_MARKET_LIVE_NATS_BATCH_SIZE": "20",
                 "RESEARCH_MARKET_LIVE_NATS_MAX_MESSAGES": "60",
                 "RESEARCH_PAPER_WATCH_OBSERVER_POLL_SECS": "5",

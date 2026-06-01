@@ -1,0 +1,170 @@
+research-app
+Usage:
+  research-app \
+    --input-bundle-file /Volumes/WD/Developments/nangman-crypto/data/examples/candidate-bundles.jsonl \
+    --market-feature-delta-file /Volumes/WD/Developments/nangman-crypto/data/examples/market-feature-delta.json \
+    --market-regime-context-file /Volumes/WD/Developments/nangman-crypto/data/examples/market-regime-context.json \
+    --output-dir /Volumes/WD/Developments/nangman-crypto/data/reports/research-local
+
+Batch research input can be declared with a manifest:
+  --input-manifest-file /Volumes/WD/Developments/nangman-crypto/data/examples/research-input-manifest.json
+  --input-manifest-s3-bucket nangman-crypto-dev-research-<account-suffix>
+  --input-manifest-s3-key research-input-manifest/schema=research_input_manifest_v1/run_id=.../manifest.json
+
+Shadow cycle scheduler decisions can be validated without running research:
+  --shadow-cycle-decision-file /tmp/nangman-crypto/research-current-approved-batch/<run-id>/shadow-cycle-decision.json
+
+Retest horizon scheduler handoff can be validated without running research:
+  --retest-horizon-status-file /tmp/nangman-crypto/research-current-approved-batch/<run-id>/retest-horizon-status.json
+
+Retest horizon plans can be built inside the app from a research input manifest,
+candidate bundle refs, a research-run report, and an optional/latest Market-L1
+watermark. S3 output uses the non-dispatching retest-horizon-plan/ prefix:
+  --build-retest-horizon-plan
+  --input-manifest-file /tmp/nangman-crypto/research-current-approved-batch/<run-id>/research-input-manifest.json
+  --research-report-file /tmp/nangman-crypto/research-current-approved-batch/<run-id>/research-report.json
+  --retest-horizon-latest-l1-as-of-ms 1779715800000
+  --retest-horizon-plan-output-file /tmp/nangman-crypto/research-current-approved-batch/<run-id>/retest-horizon-plan.json
+
+Retest horizon status can be built inside the app from an existing retest
+horizon plan, removing the local shell/JQ status summarizer from scheduler paths:
+  --build-retest-horizon-status
+  --retest-horizon-plan-file /tmp/nangman-crypto/research-current-approved-batch/<run-id>/retest-horizon-plan.json
+  --retest-horizon-status-output-file /tmp/nangman-crypto/research-current-approved-batch/<run-id>/retest-horizon-status.json
+
+Retest refresh cycle mode rebuilds the plan/status from current manifest,
+research report, and latest Market-L1 watermark. It writes no dispatching
+manifest while the status is WAIT; when replay is ready it writes a focused
+research_input_manifest_v1 under the existing dispatcher prefix:
+  --run-retest-refresh-cycle
+  --input-manifest-s3-bucket nangman-crypto-dev-research-<account-suffix>
+  --input-manifest-s3-key research-input-manifest/schema=research_input_manifest_v1/...
+  --research-report-s3-bucket nangman-crypto-dev-research-<account-suffix>
+  --research-report-s3-key research-run-report/schema=research_run_report_v1/.../report.json
+  --market-l1-s3-bucket nangman-crypto-dev-market-ingest-l1-<account-suffix>
+  --output-s3-bucket nangman-crypto-dev-research-<account-suffix>
+
+Retest refresh can also discover its manifest/report pair from the latest
+retest-cycle-source-state checkpoint, which is the scheduler-friendly runtime
+entrypoint after prior S3 research output has completed:
+  --run-retest-refresh-cycle-from-latest-state
+  --output-s3-bucket nangman-crypto-dev-research-<account-suffix>
+  --market-l1-s3-bucket nangman-crypto-dev-market-ingest-l1-<account-suffix>
+
+Retest cycle scheduler mode is safe to call repeatedly. It does not write a
+manifest before run_not_before_ms, and if an old WAIT status is past due it asks
+for a fresh retest horizon status instead of triggering stale research:
+  --run-retest-cycle-scheduler
+  --retest-horizon-status-file /tmp/nangman-crypto/research-current-approved-batch/<run-id>/retest-horizon-status.json
+  --input-manifest-file /tmp/nangman-crypto/research-current-approved-batch/<run-id>/research-input-manifest.json
+  --focused-retest-manifest-output-file /tmp/nangman-crypto/research-focus/input-manifest.json
+
+Focused retest manifests can be built without running research:
+  --build-focused-retest-manifest
+  --retest-horizon-status-file /tmp/nangman-crypto/research-current-approved-batch/<run-id>/retest-horizon-status.json
+  --input-manifest-file /tmp/nangman-crypto/research-current-approved-batch/<run-id>/research-input-manifest.json
+  --focused-retest-manifest-output-file /tmp/nangman-crypto/research-focus/input-manifest.json
+
+Paper-watch live cycle can mark paper-only candidates from the MARKET_LIVE stream.
+It does not create orders, does not approve live trading, and always writes
+paper_watch_live_mark_v1 with live/order safety flags disabled:
+  --run-paper-watch-live-cycle
+  --paper-watch-candidate-s3-bucket nangman-crypto-dev-research-<account-suffix>
+  --paper-watch-candidate-s3-key paper-watch-candidate/schema=paper_watch_candidate_v1/...
+  --market-live-nats-url nats://<private-nats-host>:4222
+  --output-s3-bucket nangman-crypto-dev-research-<account-suffix>
+  --output-s3-prefix paper-watch-live-mark/schema=paper_watch_live_mark_v1
+
+Paper-watch observer is the long-running service mode. It repeatedly reads the
+latest paper-watch candidates, consumes MARKET_LIVE ticks through a durable NATS
+consumer, writes live marks, and writes observer snapshots. It is still paper-only:
+  --run-paper-watch-observer
+  --paper-watch-candidate-s3-bucket nangman-crypto-dev-research-<account-suffix>
+  --paper-watch-candidate-s3-prefix paper-watch-candidate/schema=paper_watch_candidate_v1
+  --market-live-nats-url nats://<private-nats-host>:4222
+  --output-s3-bucket nangman-crypto-dev-research-<account-suffix>
+  --output-s3-prefix paper-watch-observer-state/schema=paper_watch_observer_snapshot_v1
+  --paper-watch-live-mark-s3-prefix paper-watch-live-mark/schema=paper_watch_live_mark_v1
+  --paper-watch-observer-poll-secs 5
+  --paper-watch-observer-max-iterations 1  # smoke test only; omit for service mode
+
+The focused manifest can also be written to S3 to wake the existing dispatcher:
+  --build-focused-retest-manifest
+  --retest-horizon-status-s3-bucket nangman-crypto-dev-research-<account-suffix>
+  --retest-horizon-status-s3-key retest-horizon-status/schema=research_horizon_status_checkpoint_v1/...
+  --input-manifest-s3-bucket nangman-crypto-dev-research-<account-suffix>
+  --input-manifest-s3-key research-input-manifest/schema=research_input_manifest_v1/...
+  --output-s3-bucket nangman-crypto-dev-research-<account-suffix>
+  --output-s3-prefix research-input-manifest/schema=research_input_manifest_v1
+
+Shadow cycle scheduler decisions can also be built inside the app from
+shadow_validation_run_v1 inputs:
+  --build-shadow-cycle-decision
+  --shadow-validation-run-file /tmp/nangman-crypto/research-current-approved-batch/<run-id>/shadow-validation-run.jsonl
+  --shadow-cycle-latest-l1-as-of-ms 1779696900000
+  --shadow-cycle-decision-output-file /tmp/nangman-crypto/research-current-approved-batch/<run-id>/shadow-cycle-decision.json
+
+The same mode can run in ECS with S3 input/output:
+  --build-shadow-cycle-decision
+  --shadow-validation-run-s3-bucket nangman-crypto-dev-research-<account-suffix>
+  --shadow-validation-run-s3-key shadow-validation-run/schema=shadow_validation_run_v1/dt=.../part-000001.jsonl
+  --output-s3-bucket nangman-crypto-dev-research-<account-suffix>
+  --output-s3-prefix shadow-cycle/
+
+The ECS scheduler can also discover the latest shadow-validation-run artifacts
+from the research bucket and write a fresh shadow-cycle-decision artifact:
+  --run-shadow-cycle-from-latest-state
+  --output-s3-bucket nangman-crypto-dev-research-<account-suffix>
+  --market-l1-s3-bucket nangman-crypto-dev-market-ingest-l1-<account-suffix>
+
+Market L1 replay input can be loaded from S3 in ECS:
+  --market-l1-s3-bucket nangman-crypto-dev-market-ingest-l1-<account-suffix>
+  --market-feature-delta-s3-key market_feature_delta/run_id=l1_.../delta.json
+  --market-regime-context-s3-key market_regime_context/run_id=l1_.../context.json
+  The app can also discover later replay-window keys through direct run_id
+  prefixes or the success-only l1_index -> manifest path.
+  --historical-replay-run-s3-bucket nangman-crypto-dev-research-<account-suffix>
+  --historical-replay-run-s3-key replay-run/schema=replay_run_v1/dt=.../part-000001.jsonl
+  --historical-replay-run-index-s3-bucket nangman-crypto-dev-research-<account-suffix>
+  --historical-replay-run-index-s3-key replay-run-index/schema=replay_run_index_v1/dt=.../part-000001.jsonl
+  --shadow-validation-run-s3-bucket nangman-crypto-dev-research-<account-suffix>
+  --shadow-validation-run-s3-key shadow-validation-run/schema=shadow_validation_run_v1/dt=.../part-000001.jsonl
+
+ECS input and output can also come from environment:
+  RESEARCH_INPUT_MANIFEST_S3_BUCKET
+  RESEARCH_INPUT_MANIFEST_S3_KEY
+  RESEARCH_INPUT_S3_BUCKET
+  RESEARCH_INPUT_S3_KEY
+  RESEARCH_MARKET_L1_S3_BUCKET
+  RESEARCH_MARKET_FEATURE_DELTA_S3_KEYS
+  RESEARCH_MARKET_REGIME_CONTEXT_S3_KEYS
+  RESEARCH_HISTORICAL_REPLAY_RUN_S3_BUCKET
+  RESEARCH_HISTORICAL_REPLAY_RUN_S3_KEYS
+  RESEARCH_HISTORICAL_REPLAY_RUN_INDEX_S3_BUCKET
+  RESEARCH_HISTORICAL_REPLAY_RUN_INDEX_S3_KEYS
+  RESEARCH_HISTORICAL_REPLAY_RUN_INDEX_S3_PREFIX
+  RESEARCH_HISTORICAL_REPLAY_RUN_INDEX_S3_READ_LIMIT
+  RESEARCH_HISTORICAL_REPLAY_RUN_INDEX_S3_SCAN_LIMIT
+  RESEARCH_SHADOW_VALIDATION_RUN_S3_BUCKET
+  RESEARCH_SHADOW_VALIDATION_RUN_S3_KEYS
+  RESEARCH_BUILD_SHADOW_CYCLE_DECISION
+  RESEARCH_SHADOW_CYCLE_LATEST_L1_AS_OF_MS
+	  RESEARCH_SHADOW_CYCLE_DECISION_OUTPUT_FILE
+	  RESEARCH_RUN_PAPER_WATCH_LIVE_CYCLE
+	  RESEARCH_PAPER_WATCH_CANDIDATE_FILE
+	  RESEARCH_PAPER_WATCH_CANDIDATE_S3_BUCKET
+	  RESEARCH_PAPER_WATCH_CANDIDATE_S3_KEY
+	  RESEARCH_MARKET_LIVE_TICK_FILE
+	  RESEARCH_MARKET_LIVE_NATS_URL
+	  RESEARCH_MARKET_LIVE_NATS_STREAM
+	  RESEARCH_MARKET_LIVE_NATS_SUBJECT
+	  RESEARCH_MARKET_LIVE_NATS_CONSUMER
+	  RESEARCH_MARKET_LIVE_NATS_DELIVER_POLICY
+	  RESEARCH_MARKET_LIVE_NATS_BATCH_SIZE
+	  RESEARCH_MARKET_LIVE_NATS_MAX_MESSAGES
+	  RESEARCH_MARKET_LIVE_NATS_ACK_WAIT_SECS
+	  RESEARCH_OUTPUT_S3_BUCKET
+	  RESEARCH_OUTPUT_S3_PREFIX
+
+Without --output-dir, the app prints research_run_report_v1 to stdout.
+This app does not execute orders, does not approve live trading, and does not emit EXECUTION_APPROVED or LIVE_READY.

@@ -104,11 +104,7 @@ pub(in crate::cli) fn load_retest_driver_summary(
     let Some(path) = args.retest_driver_summary_file.as_deref() else {
         return Ok(None);
     };
-    if !path.is_absolute() {
-        return Err(AppError::config(
-            "retest driver summary file must be an absolute path",
-        ));
-    }
+    crate::path_validation::validate_config_absolute_path(path, "retest driver summary file")?;
     let bytes = fs::read(path)?;
     let value = serde_json::from_slice(&bytes)?;
     Ok(Some(value))

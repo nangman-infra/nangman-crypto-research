@@ -1,0 +1,10 @@
+{
+  present:false,
+  observed_symbols:[],
+  approved_symbols:[],
+  excluded_symbols:[],
+  observed_symbol_count:0,
+  approved_symbol_count:0,
+  excluded_symbol_count:0,
+  status_reason_counts:[]
+}

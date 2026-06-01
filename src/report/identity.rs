@@ -1,6 +1,33 @@
+use crate::hash::stable_id;
 use crate::model::{
     IntelCandidateEvidenceBundle, OssAdapterRun, ReplayRun, ReplayRunStatus, ShadowValidationRun,
 };
+
+pub(super) fn report_id(
+    research_packet_id: &str,
+    run_scope: &str,
+    bundles: &[IntelCandidateEvidenceBundle],
+    replay_runs: &[ReplayRun],
+    oss_adapter_runs: &[OssAdapterRun],
+    completed_shadow_validation_runs: &[ShadowValidationRun],
+) -> String {
+    let candidate_identity = candidate_identity_parts(bundles).join("|");
+    let replay_identity = replay_identity_parts(replay_runs).join("|");
+    let oss_identity = oss_identity_parts(oss_adapter_runs).join("|");
+    let shadow_identity = shadow_identity_parts(completed_shadow_validation_runs).join("|");
+    stable_id(
+        "research_report",
+        &[
+            research_packet_id,
+            run_scope,
+            &bundles.len().to_string(),
+            &candidate_identity,
+            &replay_identity,
+            &oss_identity,
+            &shadow_identity,
+        ],
+    )
+}
 
 pub(super) fn candidate_identity_parts(bundles: &[IntelCandidateEvidenceBundle]) -> Vec<String> {
     let mut parts = bundles

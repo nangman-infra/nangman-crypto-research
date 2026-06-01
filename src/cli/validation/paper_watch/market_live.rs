@@ -1,13 +1,10 @@
 use crate::cli::Args;
 use crate::error::{AppError, AppResult};
+use crate::path_validation::validate_config_absolute_path;
 
 pub(super) fn validate_market_live_tick_input(args: &Args) -> AppResult<()> {
-    if let Some(path) = args.market_live_tick_file.as_deref()
-        && !path.is_absolute()
-    {
-        return Err(AppError::config(
-            "RESEARCH_MARKET_LIVE_TICK_FILE must be an absolute path",
-        ));
+    if let Some(path) = args.market_live_tick_file.as_deref() {
+        validate_config_absolute_path(path, "RESEARCH_MARKET_LIVE_TICK_FILE")?;
     }
     if args.market_live_tick_file.is_some() && args.market_live_nats_url.is_some() {
         return Err(AppError::config(

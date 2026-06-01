@@ -17,8 +17,6 @@ use crate::model::{
 };
 
 #[cfg(test)]
-use crate::model::{ResearchBias, ShadowCycleSchedulerAction};
-#[cfg(test)]
 use builders::top_reason_lines;
 #[cfg(test)]
 use config::{APP_NAME, DEFAULT_PIPELINE_ALERT_S3_PREFIX};

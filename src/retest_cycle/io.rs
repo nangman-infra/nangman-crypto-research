@@ -1,14 +1,11 @@
 use crate::error::{AppError, AppResult};
+use crate::path_validation::validate_config_absolute_path;
 use serde_json::Value;
 use std::fs;
 use std::path::Path;
 
 pub fn read_retest_horizon_status(path: &Path) -> AppResult<Value> {
-    if !path.is_absolute() {
-        return Err(AppError::config(
-            "retest horizon status file must be an absolute path",
-        ));
-    }
+    validate_config_absolute_path(path, "retest horizon status file")?;
     let raw = fs::read_to_string(path)?;
     read_retest_horizon_status_from_bytes(&path.display().to_string(), raw.as_bytes())
 }

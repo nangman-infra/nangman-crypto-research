@@ -47,6 +47,33 @@ mod tests {
     }
 
     #[test]
+    fn validates_s3_location_rejects_unsafe_key_characters() {
+        for key in [
+            "prefix/object\nname.json",
+            "prefix/object\rname.json",
+            "prefix\\object.json",
+        ] {
+            let error = validate_s3_location("bucket", key, "test")
+                .expect_err("unsafe key must be rejected")
+                .to_string();
+            assert!(
+                error.contains("control characters") || error.contains("backslashes"),
+                "expected unsafe character error for {key:?}, got {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn validates_s3_location_rejects_keys_over_s3_limit() {
+        let key = format!("prefix/{}.json", "a".repeat(1_024));
+        let error = validate_s3_location("bucket", &key, "test")
+            .expect_err("oversized S3 key must be rejected")
+            .to_string();
+
+        assert!(error.contains("1024 bytes"));
+    }
+
+    #[test]
     fn validates_s3_location_allows_safe_dot_in_key_names() {
         validate_s3_location("bucket", "prefix/file.name.json", "test")
             .expect("safe dot key is accepted");
@@ -65,5 +92,21 @@ mod tests {
                 .to_string()
                 .contains("research-input-manifest/")
         );
+    }
+
+    #[test]
+    fn validates_research_input_manifest_key_rejects_unsafe_shape() {
+        for key in [
+            "research-input-manifest/run/manifest\n.json",
+            "research-input-manifest\\run\\manifest.json",
+        ] {
+            let error = validate_research_input_manifest_s3_key(key)
+                .expect_err("unsafe manifest key must be rejected")
+                .to_string();
+            assert!(
+                error.contains("control characters") || error.contains("backslashes"),
+                "expected unsafe character error for {key:?}, got {error}"
+            );
+        }
     }
 }

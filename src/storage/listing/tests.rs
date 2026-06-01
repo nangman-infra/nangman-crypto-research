@@ -1,4 +1,5 @@
 use super::limits::{PayloadListOptions, scan_limit_exceeded_error};
+use super::selection::ListedPayloadObject;
 use super::*;
 
 #[test]

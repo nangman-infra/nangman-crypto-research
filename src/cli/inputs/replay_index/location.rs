@@ -34,12 +34,13 @@ pub(super) fn replay_run_location(record: &ReplayRunIndexRecord) -> AppResult<Re
     }
 
     let path = PathBuf::from(&record.replay_run_uri);
-    if !path.is_absolute() {
-        return Err(AppError::config(format!(
-            "replay_run_index replay_run_uri must be an absolute path or s3 URI: {}",
-            record.replay_run_uri
-        )));
-    }
+    crate::path_validation::validate_config_absolute_path(&path, "replay_run_index replay_run_uri")
+        .map_err(|error| {
+            AppError::config(format!(
+                "replay_run_index replay_run_uri must be an absolute path or s3 URI: {}; {error}",
+                record.replay_run_uri
+            ))
+        })?;
     Ok(ReplayRunLocation::Local(path))
 }
 

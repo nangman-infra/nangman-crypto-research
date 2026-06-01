@@ -1,0 +1,15 @@
+{
+  present:false,
+  source_candidate_count:0,
+  replay_run_count:0,
+  partition_count:0,
+  top_symbols:[],
+  surviving_candidate_count:0,
+  retest_candidate_count:0,
+  pruned_candidate_count:0,
+  shadow_validation_count:0,
+  paper_trade_candidate_count:0,
+  bias_counts:[],
+  gate_biases:[],
+  promotion_bias_count:0
+}

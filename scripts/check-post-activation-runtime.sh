@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-ap-northeast-2}}"
 DISPATCHER_FUNCTION="${RESEARCH_DISPATCHER_FUNCTION:-lmbd-nangman-dev-research-apn2}"
 CLUSTER_NAME="${RESEARCH_ECS_CLUSTER:-ecs-nangman-dev-invest-apn2}"
@@ -9,103 +10,11 @@ CONTAINER_NAME="${RESEARCH_ECS_CONTAINER:-research-app}"
 EXPECTED_DISPATCH_MODE="${RESEARCH_EXPECTED_DISPATCH_MODE:-run_task}"
 VERIFY_FRESH_OUTPUT="${RESEARCH_VERIFY_FRESH_OUTPUT:-true}"
 OUTPUT_MIN_LAST_MODIFIED="${RESEARCH_OUTPUT_MIN_LAST_MODIFIED:-}"
-
-require_command() {
-  if ! command -v "$1" >/dev/null 2>&1; then
-    echo "missing required command: $1" >&2
-    exit 1
-  fi
-}
-
-redact() {
-  sed -E \
-    -e 's/[0-9]{12}/<aws-account-id>/g' \
-    -e 's/nangman-crypto-dev-[A-Za-z0-9-]+-[0-9]{6}/nangman-crypto-dev-<bucket-family>-<account-suffix>/g' \
-    -e 's#arn:aws:iam::[^[:space:]"]+#arn:aws:iam::<aws-account-id>:<resource>#g' \
-    -e 's#arn:aws:ecs:[^[:space:]"]+#arn:aws:ecs:<region>:<aws-account-id>:<resource>#g' \
-    -e 's#arn:aws:lambda:[^[:space:]"]+#arn:aws:lambda:<region>:<aws-account-id>:<resource>#g' \
-    -e 's/subnet-[A-Za-z0-9]+/<subnet-id>/g' \
-    -e 's/sg-[A-Za-z0-9]+/<security-group-id>/g'
-}
-
-aws_cmd() {
-  aws --region "$REGION" "$@"
-}
-
-verify_aws_access() {
-  local identity_output
-  if ! identity_output="$(aws_cmd sts get-caller-identity --output json 2>&1)"; then
-    {
-      echo "AWS credentials unavailable or expired for region=$REGION"
-      echo "Refresh the AWS login/session, then rerun this check."
-      echo "$identity_output"
-    } | redact >&2
-    exit 1
-  fi
-
-  echo "aws identity ok: account=$(jq -r '.Account' <<<"$identity_output" | redact)"
-}
-
-latest_object_json() {
-  local bucket="$1"
-  local prefix="$2"
-  aws_cmd s3api list-objects-v2 \
-    --bucket "$bucket" \
-    --prefix "$prefix" \
-    --query 'sort_by(Contents || `[]`, &LastModified)[-1].{prefix:`'"$prefix"'`,lastModified:LastModified,size:Size,key:Key}' \
-    --output json
-}
-
-require_fresh_object() {
-  local bucket="$1"
-  local prefix="$2"
-  local object_json="$3"
-  local key
-  local last_modified
-  local size
-
-  key="$(jq -r '.key // empty' <<<"$object_json")"
-  last_modified="$(jq -r '.lastModified // empty' <<<"$object_json")"
-  size="$(jq -r '.size // 0' <<<"$object_json")"
-  if [[ -z "$key" || -z "$last_modified" || "$size" == "0" ]]; then
-    echo "missing or empty required output prefix: s3://${bucket}/${prefix}" | redact >&2
-    exit 1
-  fi
-  if [[ -n "$OUTPUT_MIN_LAST_MODIFIED" && "$last_modified" < "$OUTPUT_MIN_LAST_MODIFIED" ]]; then
-    echo "stale output prefix: s3://${bucket}/${prefix} latest=${last_modified} min=${OUTPUT_MIN_LAST_MODIFIED}" | redact >&2
-    exit 1
-  fi
-}
-
-validate_report_sample() {
-  local bucket="$1"
-  local key="$2"
-  local report_json
-  report_json="$(aws_cmd s3 cp "s3://${bucket}/${key}" -)"
-
-  jq -e '
-    .schema_version == "research_run_report_v1"
-    and (.research_run_report_id | type == "string" and length > 0)
-    and (.source_candidate_ids | type == "array" and length > 0)
-    and (.replay_run_ids | type == "array" and length > 0)
-    and (.partition_aggregates | type == "array")
-    and (.research_gate_policy.policy_version | type == "string" and length > 0)
-  ' <<<"$report_json" >/dev/null
-
-  jq -c '{
-    schema_version,
-    research_run_report_id,
-    source_candidate_count:(.source_candidate_ids | length),
-    replay_run_count:(.replay_run_ids | length),
-    partition_count,
-    top_symbols,
-    surviving_candidate_count:(.surviving_candidate_keys | length),
-    retest_candidate_count:(.retest_candidate_keys | length),
-    pruned_candidate_count:(.pruned_candidate_keys | length),
-    shadow_validation_count:(.shadow_validation_runs | length),
-    paper_trade_candidate_count:(.paper_trade_candidates | length)
-  }' <<<"$report_json" | redact
-}
+JQ_DIR="$SCRIPT_DIR/jq"
+# shellcheck source=scripts/lib/runtime-common.sh
+source "$SCRIPT_DIR/lib/runtime-common.sh"
+# shellcheck source=scripts/lib/post-activation-runtime-checks.sh
+source "$SCRIPT_DIR/lib/post-activation-runtime-checks.sh"
 
 require_command aws
 require_command jq
@@ -203,7 +112,7 @@ paper_json="$(latest_object_json "$output_bucket" "paper-trade-run/")"
 
 echo "latest output prefixes:"
 for object_json in "$report_json" "$replay_json" "$index_json" "$shadow_json" "$paper_json"; do
-  jq -c 'if .key == null then {prefix:.prefix,lastModified:null,size:null,key:null} else {prefix:.prefix,lastModified:.lastModified,size:.size,key:(.key | split("/") | .[0:4] | join("/") + "/...")} end' <<<"$object_json" | redact
+  jq -c -f "$(post_activation_runtime_jq activation-readiness-latest-object-display.jq)" <<<"$object_json" | redact
 done
 
 if [[ "$VERIFY_FRESH_OUTPUT" == "true" ]]; then

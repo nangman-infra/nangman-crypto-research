@@ -1,33 +1,18 @@
-use crate::error::{AppError, AppResult};
+use crate::error::AppResult;
 use crate::model::{PaperWatchLiveMark, ResearchInputManifest, ShadowCycleDecision};
+use crate::path_validation::validate_config_absolute_path;
 use serde::Serialize;
-use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use super::super::partition::partition;
-use super::file::{write_jsonl, write_pretty_json};
+use super::file::{create_output_file, write_jsonl, write_pretty_json};
 
 pub fn write_shadow_cycle_decision(
     output_file: &Path,
     decision: &ShadowCycleDecision,
 ) -> AppResult<PathBuf> {
-    if !output_file.is_absolute() {
-        return Err(AppError::config(
-            "shadow cycle decision output file must be an absolute path",
-        ));
-    }
-    let parent = output_file.parent().ok_or_else(|| {
-        AppError::validation(format!(
-            "shadow cycle decision output path has no parent: {}",
-            output_file.display()
-        ))
-    })?;
-    fs::create_dir_all(parent)?;
-    let mut file = File::create(output_file)?;
-    serde_json::to_writer_pretty(&mut file, decision)?;
-    file.write_all(b"\n")?;
-    Ok(output_file.to_path_buf())
+    write_pretty_json_file_with_labels(output_file, decision, "shadow cycle decision output file")
 }
 
 pub fn write_paper_watch_live_marks(
@@ -50,39 +35,26 @@ pub fn write_research_input_manifest(
     output_file: &Path,
     manifest: &ResearchInputManifest,
 ) -> AppResult<PathBuf> {
-    if !output_file.is_absolute() {
-        return Err(AppError::config(
-            "research input manifest output file must be an absolute path",
-        ));
-    }
-    let parent = output_file.parent().ok_or_else(|| {
-        AppError::validation(format!(
-            "research input manifest output path has no parent: {}",
-            output_file.display()
-        ))
-    })?;
-    fs::create_dir_all(parent)?;
-    let mut file = File::create(output_file)?;
-    serde_json::to_writer_pretty(&mut file, manifest)?;
-    file.write_all(b"\n")?;
-    Ok(output_file.to_path_buf())
+    write_pretty_json_file_with_labels(output_file, manifest, "research input manifest output file")
 }
 
 pub fn write_pretty_json_file<T>(output_file: &Path, value: &T) -> AppResult<PathBuf>
 where
     T: Serialize,
 {
-    if !output_file.is_absolute() {
-        return Err(AppError::config("output file must be an absolute path"));
-    }
-    let parent = output_file.parent().ok_or_else(|| {
-        AppError::validation(format!(
-            "output file path has no parent: {}",
-            output_file.display()
-        ))
-    })?;
-    fs::create_dir_all(parent)?;
-    let mut file = File::create(output_file)?;
+    write_pretty_json_file_with_labels(output_file, value, "output file")
+}
+
+fn write_pretty_json_file_with_labels<T>(
+    output_file: &Path,
+    value: &T,
+    file_label: &str,
+) -> AppResult<PathBuf>
+where
+    T: Serialize,
+{
+    validate_config_absolute_path(output_file, file_label)?;
+    let mut file = create_output_file(output_file)?;
     serde_json::to_writer_pretty(&mut file, value)?;
     file.write_all(b"\n")?;
     Ok(output_file.to_path_buf())

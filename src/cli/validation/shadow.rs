@@ -1,5 +1,6 @@
 use super::*;
 use crate::error::{AppError, AppResult};
+use crate::path_validation::validate_config_absolute_path;
 
 pub(in crate::cli) fn validate_shadow_cycle_build_args(args: &Args) -> AppResult<()> {
     if args.output_dir.is_some() && args.output_s3_bucket.is_some() {
@@ -7,12 +8,8 @@ pub(in crate::cli) fn validate_shadow_cycle_build_args(args: &Args) -> AppResult
             "use either --output-dir or --output-s3-bucket, not both",
         ));
     }
-    if let Some(path) = args.shadow_cycle_decision_output_file.as_deref()
-        && !path.is_absolute()
-    {
-        return Err(AppError::config(
-            "RESEARCH_SHADOW_CYCLE_DECISION_OUTPUT_FILE must be an absolute path",
-        ));
+    if let Some(path) = args.shadow_cycle_decision_output_file.as_deref() {
+        validate_config_absolute_path(path, "RESEARCH_SHADOW_CYCLE_DECISION_OUTPUT_FILE")?;
     }
     if args.shadow_cycle_decision_output_file.is_none()
         && args.output_dir.is_none()

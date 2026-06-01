@@ -1,5 +1,6 @@
 use crate::cli::Args;
 use crate::error::{AppError, AppResult};
+use crate::path_validation::validate_config_absolute_path;
 
 pub(in crate::cli) fn validate_retest_horizon_plan_input_args(args: &Args) -> AppResult<()> {
     if args.retest_horizon_plan_file.is_some()
@@ -15,19 +16,11 @@ pub(in crate::cli) fn validate_retest_horizon_plan_input_args(args: &Args) -> Ap
             "--retest-horizon-plan-s3-bucket and --retest-horizon-plan-s3-key must be set together",
         ));
     }
-    if let Some(path) = args.retest_horizon_plan_file.as_deref()
-        && !path.is_absolute()
-    {
-        return Err(AppError::config(
-            "RESEARCH_RETEST_HORIZON_PLAN_FILE must be an absolute path",
-        ));
+    if let Some(path) = args.retest_horizon_plan_file.as_deref() {
+        validate_config_absolute_path(path, "RESEARCH_RETEST_HORIZON_PLAN_FILE")?;
     }
-    if let Some(path) = args.retest_driver_summary_file.as_deref()
-        && !path.is_absolute()
-    {
-        return Err(AppError::config(
-            "RESEARCH_RETEST_DRIVER_SUMMARY_FILE must be an absolute path",
-        ));
+    if let Some(path) = args.retest_driver_summary_file.as_deref() {
+        validate_config_absolute_path(path, "RESEARCH_RETEST_DRIVER_SUMMARY_FILE")?;
     }
     Ok(())
 }
@@ -45,12 +38,8 @@ pub(in crate::cli) fn validate_research_report_input_args(args: &Args) -> AppRes
             "--research-report-s3-bucket and --research-report-s3-key must be set together",
         ));
     }
-    if let Some(path) = args.research_report_file.as_deref()
-        && !path.is_absolute()
-    {
-        return Err(AppError::config(
-            "RESEARCH_REPORT_FILE must be an absolute path",
-        ));
+    if let Some(path) = args.research_report_file.as_deref() {
+        validate_config_absolute_path(path, "RESEARCH_REPORT_FILE")?;
     }
     Ok(())
 }
@@ -70,12 +59,8 @@ pub(in crate::cli) fn validate_retest_horizon_status_input_args(args: &Args) -> 
             "--retest-horizon-status-s3-bucket and --retest-horizon-status-s3-key must be set together",
         ));
     }
-    if let Some(path) = args.retest_horizon_status_file.as_deref()
-        && !path.is_absolute()
-    {
-        return Err(AppError::config(
-            "RESEARCH_HORIZON_STATUS_FILE must be an absolute path",
-        ));
+    if let Some(path) = args.retest_horizon_status_file.as_deref() {
+        validate_config_absolute_path(path, "RESEARCH_HORIZON_STATUS_FILE")?;
     }
     Ok(())
 }

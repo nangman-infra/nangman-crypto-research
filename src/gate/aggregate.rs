@@ -21,35 +21,41 @@ pub fn build_partition_aggregates(
         .iter()
         .map(|bundle| (bundle.candidate_id.as_str(), bundle))
         .collect::<BTreeMap<_, _>>();
-    let mut accumulators = BTreeMap::<String, AggregateAccumulator>::new();
+    let mut runs_by_aggregate_key = BTreeMap::<String, Vec<&ReplayRun>>::new();
 
     for run in replay_runs {
-        let accumulator = accumulators
+        runs_by_aggregate_key
             .entry(run.research_aggregate_key.clone())
-            .or_insert_with(|| AggregateAccumulator::new(run));
-        accumulator.apply_bundle_requirements(
-            bundle_by_candidate_id
-                .get(run.source_candidate_id.as_str())
-                .copied(),
-        );
+            .or_default()
+            .push(run);
     }
 
-    for run in replay_runs {
-        let accumulator = accumulators
-            .get_mut(&run.research_aggregate_key)
-            .expect("accumulator was initialized in requirements pass");
-        accumulator.add_run(
-            run,
-            bundle_by_candidate_id
-                .get(run.source_candidate_id.as_str())
-                .copied(),
-            policy,
-            gate_as_of_ms,
-        );
-    }
-
-    accumulators
+    runs_by_aggregate_key
         .into_values()
-        .map(|accumulator| accumulator.finish(policy))
+        .filter_map(|runs| {
+            let first_run = runs.first().copied()?;
+            let mut accumulator = AggregateAccumulator::new(first_run);
+
+            for run in runs.iter().copied() {
+                accumulator.apply_bundle_requirements(
+                    bundle_by_candidate_id
+                        .get(run.source_candidate_id.as_str())
+                        .copied(),
+                );
+            }
+
+            for run in runs {
+                accumulator.add_run(
+                    run,
+                    bundle_by_candidate_id
+                        .get(run.source_candidate_id.as_str())
+                        .copied(),
+                    policy,
+                    gate_as_of_ms,
+                );
+            }
+
+            Some(accumulator.finish(policy))
+        })
         .collect()
 }

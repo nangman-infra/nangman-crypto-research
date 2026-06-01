@@ -14,6 +14,7 @@ pub mod model;
 pub mod paper;
 pub mod paper_live;
 pub mod paper_watch_observer;
+mod path_validation;
 pub mod portfolio;
 pub mod replay;
 pub mod report;

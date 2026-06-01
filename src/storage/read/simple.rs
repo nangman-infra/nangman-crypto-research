@@ -12,109 +12,96 @@ pub async fn read_candidate_bundles_from_s3(
     bucket: &str,
     key: &str,
 ) -> AppResult<Vec<IntelCandidateEvidenceBundle>> {
-    let client = s3_client().await?;
-    let bytes = get_object_bytes(&client, bucket, key).await?;
-    read_candidate_bundles_from_bytes(&format!("s3://{bucket}/{key}"), bytes.as_ref())
+    read_s3_object(bucket, key, read_candidate_bundles_from_bytes).await
 }
 
 pub async fn read_oss_adapter_runs_from_s3(
     bucket: &str,
     keys: &[String],
 ) -> AppResult<Vec<OssAdapterRun>> {
-    let client = s3_client().await?;
-    let mut runs = Vec::new();
-    for key in keys {
-        let bytes = get_object_bytes(&client, bucket, key).await?;
-        runs.extend(read_oss_adapter_runs_from_bytes(
-            &format!("s3://{bucket}/{key}"),
-            bytes.as_ref(),
-        )?);
-    }
-    Ok(runs)
+    read_s3_objects(bucket, keys, read_oss_adapter_runs_from_bytes).await
 }
 
 pub async fn read_shadow_validation_runs_from_s3(
     bucket: &str,
     keys: &[String],
 ) -> AppResult<Vec<ShadowValidationRun>> {
-    let client = s3_client().await?;
-    let mut runs = Vec::new();
-    for key in keys {
-        let bytes = get_object_bytes(&client, bucket, key).await?;
-        runs.extend(read_shadow_validation_runs_from_bytes(
-            &format!("s3://{bucket}/{key}"),
-            bytes.as_ref(),
-        )?);
-    }
-    Ok(runs)
+    read_s3_objects(bucket, keys, read_shadow_validation_runs_from_bytes).await
 }
 
 pub async fn read_research_input_manifest_from_s3(
     bucket: &str,
     key: &str,
 ) -> AppResult<ResearchInputManifest> {
-    let client = s3_client().await?;
-    let bytes = get_object_bytes(&client, bucket, key).await?;
-    read_research_input_manifest_from_bytes(&format!("s3://{bucket}/{key}"), bytes.as_ref())
+    read_s3_object(bucket, key, read_research_input_manifest_from_bytes).await
 }
 
 pub async fn read_research_run_report_from_s3(
     bucket: &str,
     key: &str,
 ) -> AppResult<ResearchRunReport> {
-    let client = s3_client().await?;
-    let bytes = get_object_bytes(&client, bucket, key).await?;
-    read_research_run_report_from_bytes(&format!("s3://{bucket}/{key}"), bytes.as_ref())
+    read_s3_object(bucket, key, read_research_run_report_from_bytes).await
 }
 
 pub async fn read_paper_watch_candidates_from_s3(
     bucket: &str,
     key: &str,
 ) -> AppResult<Vec<PaperWatchCandidate>> {
-    let client = s3_client().await?;
-    let bytes = get_object_bytes(&client, bucket, key).await?;
-    read_paper_watch_candidates_from_bytes(&format!("s3://{bucket}/{key}"), bytes.as_ref())
+    read_s3_object(bucket, key, read_paper_watch_candidates_from_bytes).await
 }
 
 pub async fn read_market_live_ticks_from_s3(
     bucket: &str,
     key: &str,
 ) -> AppResult<Vec<MarketLiveTick>> {
-    let client = s3_client().await?;
-    let bytes = get_object_bytes(&client, bucket, key).await?;
-    read_market_live_ticks_from_bytes(&format!("s3://{bucket}/{key}"), bytes.as_ref())
+    read_s3_object(bucket, key, read_market_live_ticks_from_bytes).await
 }
 
 pub async fn read_paper_watch_live_marks_from_s3(
     bucket: &str,
     keys: &[String],
 ) -> AppResult<Vec<PaperWatchLiveMark>> {
-    let client = s3_client().await?;
-    let mut marks = Vec::new();
-    for key in keys {
-        let bytes = get_object_bytes(&client, bucket, key).await?;
-        marks.extend(read_paper_watch_live_marks_from_bytes(
-            &format!("s3://{bucket}/{key}"),
-            bytes.as_ref(),
-        )?);
-    }
-    Ok(marks)
+    read_s3_objects(bucket, keys, read_paper_watch_live_marks_from_bytes).await
 }
 
 pub async fn read_retest_horizon_status_from_s3(
     bucket: &str,
     key: &str,
 ) -> AppResult<serde_json::Value> {
-    let client = s3_client().await?;
-    let bytes = get_object_bytes(&client, bucket, key).await?;
-    read_retest_horizon_status_from_bytes(&format!("s3://{bucket}/{key}"), bytes.as_ref())
+    read_s3_object(bucket, key, read_retest_horizon_status_from_bytes).await
 }
 
 pub async fn read_retest_horizon_plan_from_s3(
     bucket: &str,
     key: &str,
 ) -> AppResult<serde_json::Value> {
+    read_s3_object(bucket, key, read_retest_horizon_plan_from_bytes).await
+}
+
+async fn read_s3_object<T, F>(bucket: &str, key: &str, decode: F) -> AppResult<T>
+where
+    F: FnOnce(&str, &[u8]) -> AppResult<T>,
+{
     let client = s3_client().await?;
     let bytes = get_object_bytes(&client, bucket, key).await?;
-    read_retest_horizon_plan_from_bytes(&format!("s3://{bucket}/{key}"), bytes.as_ref())
+    let label = s3_object_label(bucket, key);
+    decode(&label, bytes.as_ref())
+}
+
+async fn read_s3_objects<T, F>(bucket: &str, keys: &[String], decode: F) -> AppResult<Vec<T>>
+where
+    F: Fn(&str, &[u8]) -> AppResult<Vec<T>>,
+{
+    let client = s3_client().await?;
+    let mut values = Vec::new();
+    for key in keys {
+        let bytes = get_object_bytes(&client, bucket, key).await?;
+        let label = s3_object_label(bucket, key);
+        values.extend(decode(&label, bytes.as_ref())?);
+    }
+    Ok(values)
+}
+
+fn s3_object_label(bucket: &str, key: &str) -> String {
+    format!("s3://{bucket}/{key}")
 }

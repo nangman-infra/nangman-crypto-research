@@ -1,0 +1,12 @@
+{
+  present:false,
+  expected_major_universe_size:$expected,
+  observed_symbol_count:0,
+  approved_symbol_count:0,
+  excluded_symbol_count:0,
+  major_coverage_complete:false,
+  approved_major_coverage_complete:false,
+  top_observed_symbols:[],
+  approved_symbols:[],
+  top_exclusion_reasons:[]
+}

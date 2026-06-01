@@ -1,5 +1,6 @@
 use crate::cli::Args;
 use crate::error::{AppError, AppResult};
+use crate::path_validation::validate_config_absolute_path;
 
 pub(super) fn validate_paper_watch_candidate_input(args: &Args) -> AppResult<()> {
     if args.paper_watch_candidate_file.is_some()
@@ -21,12 +22,8 @@ pub(super) fn validate_paper_watch_candidate_input(args: &Args) -> AppResult<()>
             "--run-paper-watch-live-cycle requires paper watch candidate input",
         ));
     }
-    if let Some(path) = args.paper_watch_candidate_file.as_deref()
-        && !path.is_absolute()
-    {
-        return Err(AppError::config(
-            "RESEARCH_PAPER_WATCH_CANDIDATE_FILE must be an absolute path",
-        ));
+    if let Some(path) = args.paper_watch_candidate_file.as_deref() {
+        validate_config_absolute_path(path, "RESEARCH_PAPER_WATCH_CANDIDATE_FILE")?;
     }
     Ok(())
 }
