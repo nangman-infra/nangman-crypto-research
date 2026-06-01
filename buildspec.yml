@@ -201,9 +201,9 @@ phases:
           fi
           SCHEDULE_JSON="schedule-${SCHEDULE_NAME}.json"
           UPDATE_JSON="update-${SCHEDULE_NAME}.json"
-          if ! aws scheduler get-schedule --name "${SCHEDULE_NAME}" > "${SCHEDULE_JSON}" 2>/dev/null; then
-            echo "scheduler ${SCHEDULE_NAME} not found; skipping task definition update"
-            continue
+          if ! aws scheduler get-schedule --name "${SCHEDULE_NAME}" > "${SCHEDULE_JSON}"; then
+            echo "failed to read scheduler ${SCHEDULE_NAME}; verify the schedule exists and CodeBuild has scheduler:GetSchedule" >&2
+            exit 1
           fi
           python3 - "${TASK_DEFINITION_ARN}" "${SCHEDULE_JSON}" "${UPDATE_JSON}" <<'PY'
         import json
@@ -237,7 +237,10 @@ phases:
         with open(update_path, "w", encoding="utf-8") as handle:
             json.dump(update, handle)
         PY
-          aws scheduler update-schedule --cli-input-json "file://${UPDATE_JSON}"
+          if ! aws scheduler update-schedule --cli-input-json "file://${UPDATE_JSON}"; then
+            echo "failed to update scheduler ${SCHEDULE_NAME}; verify CodeBuild has scheduler:UpdateSchedule" >&2
+            exit 1
+          fi
         done
       - printf '[{"name":"%s","imageUri":"%s"}]' "${ECS_CONTAINER_NAME}" "${IMAGE_URI}" > imagedefinitions.json
       - cat imagedefinitions.json
