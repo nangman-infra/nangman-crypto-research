@@ -124,6 +124,32 @@ fn write_jsonl_rejects_symlink_output_file() {
 
 #[cfg(unix)]
 #[test]
+fn write_jsonl_rejects_symlink_parent_directory() {
+    use std::os::unix::fs::symlink;
+
+    let root = unique_root("jsonl-symlink-parent");
+    let outside = unique_root("jsonl-symlink-parent-outside");
+    let link_parent = root.join("replay-run");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    symlink(&outside, &link_parent).unwrap();
+
+    let error = write_jsonl(
+        &root,
+        "replay-run/schema=v1/part-000001.jsonl",
+        &[json!({"ok": false})],
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert!(error.contains("output parent directory must not be a symlink"));
+    assert!(!outside.join("schema=v1").exists());
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::remove_dir_all(&outside).ok();
+}
+
+#[cfg(unix)]
+#[test]
 fn write_pretty_json_file_rejects_symlink_output_file() {
     use std::os::unix::fs::symlink;
 
@@ -145,6 +171,28 @@ fn write_pretty_json_file_rejects_symlink_output_file() {
         std::fs::read(&outside_file).unwrap(),
         b"{\"outside\":true}\n"
     );
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::remove_dir_all(&outside).ok();
+}
+
+#[cfg(unix)]
+#[test]
+fn write_pretty_json_file_rejects_symlink_parent_directory() {
+    use std::os::unix::fs::symlink;
+
+    let root = unique_root("pretty-symlink-parent");
+    let outside = unique_root("pretty-symlink-parent-outside");
+    let link_parent = root.join("linked-output");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    symlink(&outside, &link_parent).unwrap();
+
+    let error = write_pretty_json_file(&link_parent.join("output.json"), &json!({"ok": false}))
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("output parent directory must not be a symlink"));
+    assert!(!outside.join("output.json").exists());
     std::fs::remove_dir_all(&root).ok();
     std::fs::remove_dir_all(&outside).ok();
 }

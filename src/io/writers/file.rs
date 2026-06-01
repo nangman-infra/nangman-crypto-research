@@ -32,7 +32,7 @@ where
 
 pub(super) fn create_output_file(path: &Path) -> AppResult<File> {
     let parent = output_parent(path)?;
-    fs::create_dir_all(parent)?;
+    create_output_parent_dirs(parent)?;
     if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
         return Err(AppError::validation(format!(
             "output path must not be a symlink: {}",
@@ -40,6 +40,52 @@ pub(super) fn create_output_file(path: &Path) -> AppResult<File> {
         )));
     }
     Ok(File::create(path)?)
+}
+
+fn create_output_parent_dirs(parent: &Path) -> AppResult<()> {
+    match fs::symlink_metadata(parent) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(AppError::validation(format!(
+                "output parent directory must not be a symlink: {}",
+                parent.display()
+            )));
+        }
+        Ok(metadata) if metadata.is_dir() => return Ok(()),
+        Ok(_) => {
+            return Err(AppError::validation(format!(
+                "output parent path must be a directory: {}",
+                parent.display()
+            )));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+
+    let ancestor = output_parent(parent)?;
+    create_output_parent_dirs(ancestor)?;
+    match fs::create_dir(parent) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error.into()),
+    }
+    ensure_output_directory(parent)
+}
+
+fn ensure_output_directory(path: &Path) -> AppResult<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        return Err(AppError::validation(format!(
+            "output parent directory must not be a symlink: {}",
+            path.display()
+        )));
+    }
+    if !metadata.is_dir() {
+        return Err(AppError::validation(format!(
+            "output parent path must be a directory: {}",
+            path.display()
+        )));
+    }
+    Ok(())
 }
 
 fn output_parent(path: &Path) -> AppResult<&Path> {
