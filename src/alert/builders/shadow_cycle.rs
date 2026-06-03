@@ -35,6 +35,44 @@ pub(in crate::alert) fn shadow_cycle_decision_alert_event(
         _ => "shadow cycle decision".to_owned(),
     };
 
+    let mut current_state = vec![
+        format!("decision_id: {}", decision.decision_id),
+        format!("source_verdict: {}", decision.source_verdict),
+        format!(
+            "run_not_before: {}",
+            decision
+                .run_not_before_at
+                .clone()
+                .unwrap_or_else(|| "none".to_owned())
+        ),
+        format!(
+            "shadow_validation_count: {}",
+            decision.shadow_sample_state.shadow_validation_count
+        ),
+        format!(
+            "target_window_materialized_count: {}",
+            decision
+                .shadow_sample_state
+                .target_window_materialized_count
+        ),
+        format!(
+            "pending_target_window_candidate_count: {}",
+            decision
+                .shadow_sample_state
+                .pending_target_window_candidate_count
+        ),
+        format!(
+            "total_sample_deficit: {}",
+            decision.shadow_sample_state.total_sample_deficit
+        ),
+    ];
+    if let Some(manifest_file) = &decision.focused_research_manifest_file {
+        current_state.push(format!("focused_research_manifest_file: {manifest_file}"));
+    }
+    if let Some(summary_file) = &decision.focused_research_summary_file {
+        current_state.push(format!("focused_research_summary_file: {summary_file}"));
+    }
+
     Some(AlertEvent {
         priority,
         title,
@@ -42,37 +80,7 @@ pub(in crate::alert) fn shadow_cycle_decision_alert_event(
             "shadow cycle scheduler action은 {:?}입니다.",
             decision.scheduler_action
         ),
-        current_state: vec![
-            format!("decision_id: {}", decision.decision_id),
-            format!("source_verdict: {}", decision.source_verdict),
-            format!(
-                "run_not_before: {}",
-                decision
-                    .run_not_before_at
-                    .clone()
-                    .unwrap_or_else(|| "none".to_owned())
-            ),
-            format!(
-                "shadow_validation_count: {}",
-                decision.shadow_sample_state.shadow_validation_count
-            ),
-            format!(
-                "target_window_materialized_count: {}",
-                decision
-                    .shadow_sample_state
-                    .target_window_materialized_count
-            ),
-            format!(
-                "pending_target_window_candidate_count: {}",
-                decision
-                    .shadow_sample_state
-                    .pending_target_window_candidate_count
-            ),
-            format!(
-                "total_sample_deficit: {}",
-                decision.shadow_sample_state.total_sample_deficit
-            ),
-        ],
+        current_state,
         reasons: decision.blocked_actions.clone(),
         next_actions: decision.safe_next_actions.clone(),
         safety: vec![

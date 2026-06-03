@@ -2,10 +2,12 @@ use super::*;
 
 #[test]
 fn focused_shadow_cycle_decision_creates_p2_alert() {
-    let decision = test_shadow_decision(
+    let mut decision = test_shadow_decision(
         ShadowCycleSchedulerAction::RunFocusedShadowSampleAccumulationResearch,
         false,
     );
+    decision.focused_research_manifest_file =
+        Some("s3://research-bucket/research-input-manifest/manifest.jsonl".to_owned());
 
     let event = shadow_cycle_decision_alert_event(&decision, &test_config(AlertPriority::P2))
         .expect("focused shadow event is created");
@@ -16,6 +18,9 @@ fn focused_shadow_cycle_decision_creates_p2_alert() {
             .text("dev")
             .contains("shadow sample accumulation dispatch")
     );
+    assert!(event.text("dev").contains(
+        "focused_research_manifest_file: s3://research-bucket/research-input-manifest/manifest.jsonl"
+    ));
 }
 
 #[test]
